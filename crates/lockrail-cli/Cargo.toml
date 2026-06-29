@@ -1,0 +1,51 @@
+[package]
+name = "lockrail"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Local-first secret firewall for AI coding tools"
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+readme = "README.md"
+keywords = ["security", "secrets", "cli", "ai", "proxy"]
+categories = ["command-line-utilities", "security", "development-tools"]
+include = ["src/**", "tests/**", "Cargo.toml", "README.md", "LICENSE-MIT", "LICENSE-APACHE"]
+
+[[bin]]
+name = "lockrail"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+dirs = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing-subscriber = { workspace = true }
+secrecy = { workspace = true }
+reqwest = { workspace = true }
+axum = { workspace = true }
+portable-pty = { workspace = true }
+uuid = { workspace = true }
+time = { workspace = true }
+lockrail-protocol = { version = "0.2.0", path = "../lockrail-protocol" }
+lockrail-vault = { version = "0.2.0", path = "../lockrail-vault" }
+lockrail-audit = { version = "0.2.0", path = "../lockrail-audit" }
+lockrail-relay = { version = "0.2.0", path = "../lockrail-relay" }
+lockrail-proxy = { version = "0.2.0", path = "../lockrail-proxy" }
+base64ct = { workspace = true }
+crypto_box = { version = "0.9", features = ["seal"] }
+rand_core = { workspace = true }
+hex = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+ed25519-dalek = { workspace = true }
+tower = { workspace = true, features = ["util"] }

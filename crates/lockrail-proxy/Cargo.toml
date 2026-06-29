@@ -1,0 +1,36 @@
+[package]
+name = "lockrail-proxy"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Local HTTPS intercepting proxy for Lockrail — scans AI API traffic for secrets"
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+readme = "README.md"
+keywords = ["security", "proxy", "tls", "ai", "secrets"]
+categories = ["network-programming", "security"]
+include = ["src/**", "Cargo.toml", "README.md", "LICENSE-MIT", "LICENSE-APACHE"]
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+dirs = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rcgen = { workspace = true }
+tokio-rustls = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+http-body-util = { workspace = true }
+webpki-roots = { workspace = true }
+lockrail-protocol = { version = "0.2.0", path = "../lockrail-protocol" }
+
+[dev-dependencies]
+tempfile = { workspace = true }

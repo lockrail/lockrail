@@ -1,0 +1,38 @@
+[package]
+name = "lockrail-relay"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Policy-enforcing relay with replay protection for Lockrail"
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+readme = "README.md"
+keywords = ["security", "relay", "ssrf", "ai"]
+categories = ["security", "network-programming"]
+include = ["src/**", "Cargo.toml", "README.md", "LICENSE-MIT", "LICENSE-APACHE"]
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+axum = { workspace = true }
+reqwest = { workspace = true }
+tracing = { workspace = true }
+http = { workspace = true }
+uuid = { workspace = true }
+fs2 = { workspace = true }
+lockrail-protocol = { version = "0.2.0", path = "../lockrail-protocol" }
+lockrail-vault = { version = "0.2.0", path = "../lockrail-vault" }
+lockrail-audit = { version = "0.2.0", path = "../lockrail-audit" }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+secrecy = { workspace = true }

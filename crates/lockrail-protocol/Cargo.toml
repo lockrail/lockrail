@@ -1,0 +1,34 @@
+[package]
+name = "lockrail-protocol"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Protocol primitives, secret sealing, and LRAP verification for Lockrail"
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+readme = "README.md"
+keywords = ["security", "protocol", "secrets", "ai"]
+categories = ["security", "development-tools"]
+include = ["src/**", "Cargo.toml", "README.md", "LICENSE-MIT", "LICENSE-APACHE"]
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+ed25519-dalek = { workspace = true }
+rand = { workspace = true }
+rand_core = { workspace = true }
+base64ct = { workspace = true }
+sha2 = { workspace = true }
+uuid = { workspace = true }
+time = { workspace = true }
+url = { workspace = true }
+zeroize = { workspace = true }
+hex = { workspace = true }

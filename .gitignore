@@ -1,0 +1,31 @@
+# Build artifacts
+/target/
+
+# macOS metadata
+.DS_Store
+
+# Scan / CI run logs (not source)
+scan-logs/
+
+# Temp scratch directory
+tmp/
+
+# Vault data (never commit secrets)
+*.lockrail
+*.lockrail.lock
+*.lockrail.tmp
+audit.jsonl
+replay-cache.json
+usage-store.json
+.env_pw_warned
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment files (may contain secrets)
+.env
+.env.local
+.env.*.local

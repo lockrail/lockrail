@@ -1,0 +1,149 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build · ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            use_cross: false
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            use_cross: true
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            use_cross: true
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            use_cross: true
+          - target: x86_64-apple-darwin
+            os: macos-13
+            use_cross: false
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            use_cross: false
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            use_cross: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.use_cross
+        run: cargo install cross --locked
+
+      - name: Build (cross)
+        if: matrix.use_cross
+        run: cross build --release --target ${{ matrix.target }} -p lockrail
+
+      - name: Build (native)
+        if: "!matrix.use_cross"
+        run: cargo build --release --target ${{ matrix.target }} -p lockrail
+
+      - name: Package (Unix)
+        if: matrix.os != 'windows-latest'
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/lockrail dist/lockrail-${{ matrix.target }}
+          cd dist
+          sha256sum lockrail-${{ matrix.target }} > lockrail-${{ matrix.target }}.sha256
+          tar czf lockrail-${{ matrix.target }}.tar.gz lockrail-${{ matrix.target }} lockrail-${{ matrix.target }}.sha256
+
+      - name: Package (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/lockrail.exe dist/lockrail-${{ matrix.target }}.exe
+          cd dist
+          sha256sum lockrail-${{ matrix.target }}.exe > lockrail-${{ matrix.target }}.exe.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lockrail-${{ matrix.target }}
+          path: dist/*
+
+  release:
+    name: Publish Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la dist/
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          body: |
+            ## Install
+
+            **macOS / Linux — one line, no Rust needed:**
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/lockrail/lockrail/main/install.sh | sh
+            ```
+
+            **Windows — PowerShell, no Rust needed:**
+            ```powershell
+            irm https://raw.githubusercontent.com/lockrail/lockrail/main/install.ps1 | iex
+            ```
+
+            **Homebrew (macOS/Linux):**
+            ```bash
+            brew install lockrail/tap/lockrail
+            ```
+
+            **If you already have Rust:**
+            ```bash
+            cargo install lockrail
+            ```
+
+            **Direct download:**
+            | Platform | Binary | Notes |
+            |----------|--------|-------|
+            | macOS Apple Silicon | `lockrail-aarch64-apple-darwin` | M1/M2/M3 |
+            | macOS Intel | `lockrail-x86_64-apple-darwin` | |
+            | Linux x86_64 (glibc) | `lockrail-x86_64-unknown-linux-gnu` | Ubuntu, Debian, Fedora |
+            | Linux x86_64 (musl) | `lockrail-x86_64-unknown-linux-musl` | Alpine, static, any distro |
+            | Linux ARM64 (glibc) | `lockrail-aarch64-unknown-linux-gnu` | Raspberry Pi 4+, AWS Graviton |
+            | Linux ARM64 (musl) | `lockrail-aarch64-unknown-linux-musl` | Alpine ARM, static |
+            | Windows x86_64 | `lockrail-x86_64-pc-windows-msvc.exe` | |
+
+            **Quick start after installing:**
+            ```bash
+            lockrail init
+            lockrail protect --tool all
+            lockrail demo
+            lockrail ui   # dashboard at http://127.0.0.1:8790
+            ```

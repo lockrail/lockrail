@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Check
+        run: cargo check --all --all-features
+      - name: Test
+        run: cargo test --all --all-features
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Build
+        run: cargo build --all --all-features
+      - name: Package
+        run: |
+          cargo package -p lockrail-protocol --allow-dirty
+          cargo package -p lockrail-vault --allow-dirty
+          cargo package -p lockrail-audit --allow-dirty
+          cargo package -p lockrail-relay --allow-dirty
+          cargo package -p lockrail-proxy --allow-dirty
+          cargo package -p lockrail --allow-dirty

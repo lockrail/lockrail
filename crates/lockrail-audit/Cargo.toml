@@ -1,0 +1,31 @@
+[package]
+name = "lockrail-audit"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Tamper-evident audit chain primitives for Lockrail"
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+readme = "README.md"
+keywords = ["security", "audit", "jsonl", "integrity"]
+categories = ["security", "development-tools"]
+include = ["src/**", "Cargo.toml", "README.md", "LICENSE-MIT", "LICENSE-APACHE"]
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+time = { workspace = true }
+fs2 = { workspace = true }
+lockrail-protocol = { version = "0.2.0", path = "../lockrail-protocol" }
+
+[dev-dependencies]
+tempfile = { workspace = true }
