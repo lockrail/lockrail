@@ -940,7 +940,7 @@ dependencies = [
 
 [[package]]
 name = "lockrail"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "anyhow",
  "axum",
@@ -971,7 +971,7 @@ dependencies = [
 
 [[package]]
 name = "lockrail-audit"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "anyhow",
  "fs2",
@@ -986,7 +986,7 @@ dependencies = [
 
 [[package]]
 name = "lockrail-protocol"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "anyhow",
  "base64ct",
@@ -1006,7 +1006,7 @@ dependencies = [
 
 [[package]]
 name = "lockrail-proxy"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "anyhow",
  "dirs",
@@ -1026,7 +1026,7 @@ dependencies = [
 
 [[package]]
 name = "lockrail-relay"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "anyhow",
  "axum",
@@ -1048,7 +1048,7 @@ dependencies = [
 
 [[package]]
 name = "lockrail-vault"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "aes-gcm",
  "anyhow",

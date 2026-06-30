@@ -38,11 +38,25 @@ No cloud. No account. Single binary.
 
 ## Install
 
+Fast path: download the signed release binary. No Rust toolchain, no Cargo dependency stream.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lockrail/lockrail/main/install.sh | sh
+```
+
+Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/lockrail/lockrail/main/install.ps1 | iex
+```
+
+Source build fallback:
+
 ```bash
 cargo install lockrail
 ```
 
-Or download a prebuilt binary for your platform from [Releases](https://github.com/lockrail/lockrail/releases).
+Or download a prebuilt binary manually from [Releases](https://github.com/lockrail/lockrail/releases).
 
 **Supported:** macOS (ARM, Intel) · Linux (x86\_64, ARM64) · Windows (x86\_64)
 

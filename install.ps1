@@ -1,107 +1,96 @@
 # Lockrail installer for Windows
 # Usage: irm https://raw.githubusercontent.com/lockrail/lockrail/main/install.ps1 | iex
-#
-# Or, to choose the install directory:
-#   $env:LOCKRAIL_INSTALL = "C:\Tools\lockrail"; irm .../install.ps1 | iex
 
 $ErrorActionPreference = "Stop"
 
-$Repo   = "lockrail/lockrail"
+$Repo = "lockrail/lockrail"
 $Binary = "lockrail.exe"
 $Target = "x86_64-pc-windows-msvc"
 
-function Write-Step { Write-Host "  $([char]0x2022) $args" -ForegroundColor Cyan }
-function Write-Ok   { Write-Host "  $([char]0x2713) $args" -ForegroundColor Green }
-function Write-Fail { Write-Host "  $([char]0x2717) $args" -ForegroundColor Red; exit 1 }
-
-Write-Host ""
-Write-Host "  Lockrail installer" -ForegroundColor Bold
-Write-Host ""
-
-# ── resolve install directory ───────────────────────────────────────────────────
-$InstallDir = if ($env:LOCKRAIL_INSTALL) {
-    $env:LOCKRAIL_INSTALL
-} else {
-    "$env:USERPROFILE\.local\bin"
+function Write-Banner {
+    Write-Host ""
+    Write-Host "lockrail//installer" -ForegroundColor Cyan -NoNewline
+    Write-Host " secret firewall bootstrap" -ForegroundColor DarkGray
+    Write-Host "------------------------------------------------------------" -ForegroundColor DarkGray
 }
-Write-Step "Install directory: $InstallDir"
+function Write-Step($N, $Text) { Write-Host ("[{0}] {1}" -f $N, $Text) -ForegroundColor Cyan }
+function Write-Ok($Text) { Write-Host ("[ok] {0}" -f $Text) -ForegroundColor Green }
+function Write-Fail($Text) { Write-Host ("[!!] {0}" -f $Text) -ForegroundColor Red; exit 1 }
+function Write-ProgressLine($Text) { Write-Host ("     {0,-20} [##########] done" -f $Text) -ForegroundColor DarkGray }
 
-# ── fetch latest release tag ────────────────────────────────────────────────────
-Write-Step "Fetching latest release tag..."
+Write-Banner
+
+Write-Step "01" "scanning host kernel"
+if (-not [Environment]::Is64BitOperatingSystem) {
+    Write-Fail "32-bit Windows is not supported"
+}
+Write-Ok "host=windows/x86_64"
+
+Write-Step "02" "selecting release artifact"
+Write-Ok "target=$Target"
+
+Write-Step "03" "querying github releases"
 try {
     $Release = Invoke-RestMethod "https://api.github.com/repos/$Repo/releases/latest" -Headers @{ "User-Agent" = "lockrail-installer" }
     $Tag = $Release.tag_name
 } catch {
-    Write-Fail "Could not fetch latest release. Check your internet connection or visit https://github.com/$Repo/releases"
+    Write-Fail "could not resolve latest release; visit https://github.com/$Repo/releases"
 }
-Write-Step "Latest release: $Tag"
+Write-Ok "release=$Tag"
 
-# ── download binary ─────────────────────────────────────────────────────────────
-$BinaryName  = "lockrail-$Target.exe"
-$DownloadUrl = "https://github.com/$Repo/releases/download/$Tag/$BinaryName"
-$Sha256Url   = "https://github.com/$Repo/releases/download/$Tag/$BinaryName.sha256"
+Write-Step "04" "choosing install path"
+$InstallDir = if ($env:LOCKRAIL_INSTALL) { $env:LOCKRAIL_INSTALL } else { "$env:USERPROFILE\.local\bin" }
+New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+Write-Ok "path=$InstallDir"
 
+$Artifact = "lockrail-$Target.exe"
+$DownloadUrl = "https://github.com/$Repo/releases/download/$Tag/$Artifact"
+$Sha256Url = "$DownloadUrl.sha256"
 $TmpDir = Join-Path $env:TEMP "lockrail-install-$(Get-Random)"
 New-Item -ItemType Directory -Path $TmpDir | Out-Null
 $TmpBin = Join-Path $TmpDir $Binary
 $TmpSha = Join-Path $TmpDir "lockrail.sha256"
 
-Write-Step "Downloading $DownloadUrl..."
 try {
-    Invoke-WebRequest -Uri $DownloadUrl -OutFile $TmpBin -UseBasicParsing
-} catch {
-    Remove-Item $TmpDir -Recurse -Force
-    Write-Fail "Download failed: $_"
-}
+    Write-Step "05" "pulling binary payload"
+    Write-ProgressLine "download"
+    Invoke-WebRequest -Uri $DownloadUrl -OutFile $TmpBin -UseBasicParsing | Out-Null
 
-# ── verify checksum ─────────────────────────────────────────────────────────────
-try {
-    Invoke-WebRequest -Uri $Sha256Url -OutFile $TmpSha -UseBasicParsing
+    Write-Step "06" "verifying payload hash"
+    Invoke-WebRequest -Uri $Sha256Url -OutFile $TmpSha -UseBasicParsing | Out-Null
     $Expected = (Get-Content $TmpSha -Raw).Split()[0].ToLower()
-    $Actual   = (Get-FileHash $TmpBin -Algorithm SHA256).Hash.ToLower()
+    $Actual = (Get-FileHash $TmpBin -Algorithm SHA256).Hash.ToLower()
     if ($Expected -ne $Actual) {
-        Remove-Item $TmpDir -Recurse -Force
-        Write-Fail "Checksum mismatch! Expected $Expected, got $Actual"
+        Write-Fail "checksum mismatch; aborting"
     }
-    Write-Ok "Checksum verified"
-} catch {
-    Write-Step "Could not verify checksum (non-fatal), continuing..."
+    Write-Ok "sha256=$Actual"
+
+    Write-Step "07" "arming executable"
+    Copy-Item $TmpBin (Join-Path $InstallDir $Binary) -Force
+    Write-Ok "installed=$InstallDir\$Binary"
+} finally {
+    Remove-Item $TmpDir -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-# ── install ─────────────────────────────────────────────────────────────────────
-New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
-Copy-Item $TmpBin (Join-Path $InstallDir $Binary) -Force
-Remove-Item $TmpDir -Recurse -Force
-Write-Ok "Installed to $InstallDir\$Binary"
-
-# ── add to PATH if needed ────────────────────────────────────────────────────────
 $UserPath = [System.Environment]::GetEnvironmentVariable("PATH", "User")
 if ($UserPath -notlike "*$InstallDir*") {
-    [System.Environment]::SetEnvironmentVariable(
-        "PATH",
-        "$InstallDir;$UserPath",
-        "User"
-    )
+    [System.Environment]::SetEnvironmentVariable("PATH", "$InstallDir;$UserPath", "User")
     $env:PATH = "$InstallDir;$env:PATH"
-    Write-Ok "Added $InstallDir to your user PATH (restart your shell to take effect)"
-} else {
-    Write-Step "$InstallDir is already in PATH"
+    Write-Ok "added $InstallDir to user PATH"
 }
 
-# ── verify ───────────────────────────────────────────────────────────────────────
 try {
     $Version = & "$InstallDir\$Binary" --version 2>&1
     Write-Ok $Version
 } catch {
-    Write-Step "Run 'lockrail --version' to verify the install"
+    Write-Host "Run 'lockrail --version' to verify the install" -ForegroundColor Yellow
 }
 
 Write-Host ""
-Write-Host "  Quick start:" -ForegroundColor Bold
-Write-Host "    lockrail init"
-Write-Host "    lockrail protect --tool all"
-Write-Host "    lockrail demo"
-Write-Host "    lockrail ui        # dashboard at http://127.0.0.1:8790"
+Write-Host "next commands" -ForegroundColor White
+Write-Host "  lockrail init"
+Write-Host "  lockrail protect --tool all"
+Write-Host "  lockrail demo"
+Write-Host "  lockrail ui"
 Write-Host ""
-Write-Ok "Done. Run 'lockrail --help' to get started."
-Write-Host ""
+Write-Ok "bootstrap complete"

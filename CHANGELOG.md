@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-06-30
+
+### Added
+- Branded `install.sh` and `install.ps1` bootstrap output for prebuilt binary installs, avoiding Cargo's dependency download/build stream for normal users.
+- Release notes and README now point users to the no-Rust installer first, with `cargo install lockrail` kept as the source-build fallback.
+
+### Changed
+- `lockrail init` and `lockrail status` now use compact `lockrail//...` console output with clearer vault, audit, network, shim, and security sections.
+
+## [0.3.2] - 2026-06-30
+
 ### Added
 - `lockrail proxy` — HTTPS intercepting proxy that scans all AI API traffic (api.openai.com, api.anthropic.com, etc.) for secrets before they reach the model
 - `lockrail proxy install-ca` — generates a local CA certificate and installs it in the system trust store
@@ -53,6 +64,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial local vault and secret scanning prototype
 
-[Unreleased]: https://github.com/lockrail/lockrail/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/lockrail/lockrail/compare/v0.3.3...HEAD
+[0.3.3]: https://github.com/lockrail/lockrail/compare/041225b...v0.3.3
+[0.3.2]: https://github.com/lockrail/lockrail/compare/v0.2.0...041225b
 [0.2.0]: https://github.com/lockrail/lockrail/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/lockrail/lockrail/releases/tag/v0.1.0

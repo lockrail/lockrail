@@ -3025,22 +3025,26 @@ async fn run(cli: Cli) -> Result<()> {
             if cli.json {
                 print_value(&cli, &result)?;
             } else if !cli.quiet {
-                println!("Lockrail is ready.");
-                println!("Protected tools:");
+                println!("lockrail//ready");
+                println!("------------------------------------------------------------");
+                println!("[vault]    encrypted local store online");
+                println!("[audit]    hash chain initialized");
+                println!("[network]  no Lockrail cloud dependency");
+                println!();
+                println!("tool shims");
                 for tool in ["claude", "codex", "cursor", "agy"] {
                     let mark = if result["protected_tools"][tool].as_bool().unwrap_or(false) {
-                        "✓"
+                        "armed"
                     } else {
-                        "!"
+                        "standby"
                     };
-                    println!("{mark} {tool}");
+                    println!("  {tool:<8} {mark}");
                 }
-                println!("Vault:");
-                println!("✓ encrypted local vault");
-                println!("✓ no cloud");
-                println!("✓ audit enabled");
-                println!("Try:");
-                println!("echo 'OPENAI_API_KEY=sk-proj-demo...' | lockrail seal --json");
+                println!();
+                println!("next");
+                println!("  lockrail demo");
+                println!("  echo 'OPENAI_API_KEY=sk-proj-demo...' | lockrail seal --json");
+                println!("  lockrail status");
             }
         }
         Commands::Setup { apply, tools } => {
@@ -3083,56 +3087,72 @@ async fn run(cli: Cli) -> Result<()> {
             if cli.json {
                 print_value(&cli, &serde_json::to_value(status)?)?;
             } else if !cli.quiet {
-                println!("Lockrail status");
-                println!("Vault");
-                println!("✓ encrypted");
+                println!("lockrail//status");
+                println!("------------------------------------------------------------");
+                println!("vault");
+                println!("  encrypted       online");
                 println!(
-                    "{} locked/unlocked",
-                    if status.vault_unlocked { "✓" } else { "!" }
-                );
-                println!(
-                    "{} permissions OK",
-                    if status.vault_permissions_ok {
-                        "✓"
+                    "  unlock          {}",
+                    if status.vault_unlocked {
+                        "ok"
                     } else {
-                        "!"
+                        "locked"
                     }
                 );
-                println!("Protected tools");
+                println!(
+                    "  file mode       {}",
+                    if status.vault_permissions_ok {
+                        "0600"
+                    } else {
+                        "check"
+                    }
+                );
+                println!();
+                println!("tool shims");
                 for (tool, detail) in status.protected_tools {
                     let mark = if detail.starts_with("Pass") {
-                        "✓"
+                        "armed"
                     } else if detail.starts_with("Warn") {
-                        "!"
+                        "warn"
                     } else {
-                        "?"
+                        "none"
                     };
-                    println!("{mark} {tool} {detail}");
+                    println!("  {tool:<8} {mark:<6} {detail}");
                 }
-                println!("Security");
+                println!();
+                println!("security");
                 println!(
-                    "{} audit hash chain valid",
-                    if status.audit_ok { "✓" } else { "!" }
+                    "  audit chain     {}",
+                    if status.audit_ok { "valid" } else { "broken" }
                 );
                 println!(
-                    "{} replay cache writable",
-                    if status.replay_writable { "✓" } else { "!" }
-                );
-                println!(
-                    "{} signed receipts enabled",
-                    if status.receipts_enabled { "✓" } else { "!" }
-                );
-                println!(
-                    "{} private network relay blocking enabled",
-                    if status.private_network_blocking_enabled {
-                        "✓"
+                    "  replay cache    {}",
+                    if status.replay_writable {
+                        "writable"
                     } else {
-                        "!"
+                        "blocked"
                     }
                 );
-                println!("Recent activity");
+                println!(
+                    "  receipts        {}",
+                    if status.receipts_enabled {
+                        "signed"
+                    } else {
+                        "disabled"
+                    }
+                );
+                println!(
+                    "  private nets    {}",
+                    if status.private_network_blocking_enabled {
+                        "blocked"
+                    } else {
+                        "allowed"
+                    }
+                );
+                println!();
+                println!("recent activity");
                 for line in status.recent_activity {
-                    println!("- {line}");
+                    println!("  - {line}");
                 }
             }
         }

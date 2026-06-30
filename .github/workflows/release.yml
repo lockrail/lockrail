@@ -113,6 +113,7 @@ jobs:
             ```bash
             curl -fsSL https://raw.githubusercontent.com/lockrail/lockrail/main/install.sh | sh
             ```
+            This uses the Lockrail release installer, so users see a compact bootstrap sequence instead of Cargo compiling hundreds of dependencies.
 
             **Windows — PowerShell, no Rust needed:**
             ```powershell
