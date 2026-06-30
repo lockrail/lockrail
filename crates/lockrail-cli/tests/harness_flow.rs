@@ -73,6 +73,51 @@ fn assert_secret_absent(dir: &Path, needle: &str) {
 }
 
 #[test]
+fn setup_demo_and_status_work_from_clean_home() {
+    let temp_home = tempfile::tempdir().expect("temp home");
+    let home = temp_home.path();
+    let password = "demo-password";
+
+    let setup = json_output(
+        lockrail_cmd(home, password)
+            .args(["setup", "--json"])
+            .output()
+            .expect("setup"),
+    );
+    assert_eq!(setup["status"], "ready");
+    assert!(
+        setup["tools"]
+            .as_array()
+            .expect("tools")
+            .iter()
+            .any(|tool| tool == "claude")
+    );
+    assert!(
+        setup["shims"]["installed"]
+            .as_array()
+            .expect("installed")
+            .len()
+            >= 4
+    );
+
+    let demo = json_output(
+        lockrail_cmd(home, password)
+            .args(["demo", "--json"])
+            .output()
+            .expect("demo"),
+    );
+    assert!(demo.as_array().expect("demo array").len() >= 4);
+
+    let status = json_output(
+        lockrail_cmd(home, password)
+            .args(["status", "--json"])
+            .output()
+            .expect("status"),
+    );
+    assert!(status["vault_encrypted"].as_bool().unwrap_or(false));
+}
+
+#[test]
 fn init_protect_demo_status_and_proof_pack_work() {
     let temp_home = tempfile::tempdir().expect("temp home");
     let home = temp_home.path();

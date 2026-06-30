@@ -38,35 +38,38 @@ No cloud. No account. Single binary.
 
 ## Install
 
-Fast path: download the signed release binary. No Rust toolchain, no Cargo dependency stream.
+Fast path: download the release binary. No Rust toolchain, no Cargo dependency stream.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/lockrail/lockrail/main/install.sh | sh
+lockrail setup
 ```
 
 Windows PowerShell:
 
 ```powershell
 irm https://raw.githubusercontent.com/lockrail/lockrail/main/install.ps1 | iex
+lockrail setup
 ```
 
 Source build fallback:
 
 ```bash
 cargo install lockrail
+lockrail setup
 ```
 
 Or download a prebuilt binary manually from [Releases](https://github.com/lockrail/lockrail/releases).
 
 **Supported:** macOS (ARM, Intel) · Linux (x86\_64, ARM64) · Windows (x86\_64)
 
+**Not supported yet:** Homebrew. Do not use `brew tap lockrail/tap`; that tap does not exist.
+
 ## Quickstart
 
 ```bash
-export LOCKRAIL_PASSWORD="$(openssl rand -base64 32)"
-lockrail init --yes
-lockrail ai hooks                   # install Claude Code hooks (UserPromptSubmit + PostToolUse)
-lockrail demo                       # see interception in action
+lockrail setup   # creates local vault and installs shims
+lockrail demo    # see interception in action
 ```
 
 Or use the HTTPS proxy instead of PTY shims:
@@ -98,6 +101,7 @@ Agent makes an API call
 
 | Command | Description |
 |---|---|
+| `lockrail setup` | One-command setup — create vault, generate keys, install shims |
 | `lockrail init` | First-time setup — create vault, generate keys |
 | `lockrail protect --tool all` | Install PTY shims for claude, codex, cursor, agy |
 | `lockrail ai hooks` | Install Claude Code UserPromptSubmit + PostToolUse hooks |

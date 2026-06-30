@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-07-01
+
+### Changed
+- `lockrail setup` is now the simple first-run path: it creates the local vault, generates local agent keys, installs default tool shims, and prints the PATH command and next steps.
+- Install docs and installer next-step output now consistently point to `lockrail setup` instead of a multi-command `init` / `protect` sequence.
+- README and quickstart now explicitly state that Homebrew is not supported yet, so users do not try the non-existent `lockrail/tap`.
+
+### Fixed
+- `lockrail setup` no longer requires users to know `--apply` or pre-set `LOCKRAIL_PASSWORD`; it prompts for the local vault password when creating a new vault.
+
 ## [0.3.3] - 2026-06-30
 
 ### Added
@@ -64,7 +74,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial local vault and secret scanning prototype
 
-[Unreleased]: https://github.com/lockrail/lockrail/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/lockrail/lockrail/compare/v0.3.4...HEAD
+[0.3.4]: https://github.com/lockrail/lockrail/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/lockrail/lockrail/compare/041225b...v0.3.3
 [0.3.2]: https://github.com/lockrail/lockrail/compare/v0.2.0...041225b
 [0.2.0]: https://github.com/lockrail/lockrail/compare/v0.1.0...v0.2.0

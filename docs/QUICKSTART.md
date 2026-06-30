@@ -2,12 +2,28 @@
 
 ## Install
 
+macOS / Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lockrail/lockrail/main/install.sh | sh
+lockrail setup
+```
+
+Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/lockrail/lockrail/main/install.ps1 | iex
+lockrail setup
+```
+
+Fallback if you want to build from source:
+
 ```bash
 cargo install lockrail
-export LOCKRAIL_PASSWORD="$(openssl rand -base64 32)"
-lockrail init --yes
-lockrail protect --tool all --yes
+lockrail setup
 ```
+
+Homebrew is not supported yet. Do not run `brew tap lockrail/tap`; that tap does not exist.
 
 ## Offline demo
 

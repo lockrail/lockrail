@@ -88,8 +88,7 @@ try {
 
 Write-Host ""
 Write-Host "next commands" -ForegroundColor White
-Write-Host "  lockrail init"
-Write-Host "  lockrail protect --tool all"
+Write-Host "  lockrail setup"
 Write-Host "  lockrail demo"
 Write-Host "  lockrail ui"
 Write-Host ""

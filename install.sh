@@ -156,8 +156,7 @@ fi
 
 say ""
 say "${C_BOLD}next commands${C_RESET}"
-say "  lockrail init"
-say "  lockrail protect --tool all"
+say "  lockrail setup"
 say "  lockrail demo"
 say "  lockrail ui"
 

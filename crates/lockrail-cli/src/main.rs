@@ -186,8 +186,7 @@ struct UiState {
                   sealed in an AES-256-GCM encrypted local vault, and replaced with\n\
                   safe handles. No cloud. No accounts. No telemetry.\n\n\
                   Quick start:\n  \
-                    lockrail init\n  \
-                    lockrail protect --tool all\n  \
+                    lockrail setup\n  \
                     lockrail demo"
 )]
 struct Cli {
@@ -221,7 +220,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    #[command(about = "Set up Lockrail: create vault, install tool shims (run this first)")]
+    #[command(about = "Advanced setup: create vault and optionally install tool shims")]
     Init {
         #[arg(long, help = "Skip all confirmation prompts")]
         yes: bool,
@@ -230,15 +229,21 @@ enum Commands {
         #[arg(long, hide = true)]
         fast_kdf_test_only: bool,
     },
-    #[command(about = "Prepare harness configuration (alternative to init)")]
+    #[command(
+        about = "One-command setup: create vault, install shims, and print next steps",
+        long_about = "Creates the local encrypted vault, generates local agent keys, installs\n\
+                      shims for Claude, Codex, Cursor, and Antigravity, and prints the\n\
+                      PATH command if your shell needs it.\n\n\
+                      Start here after installing Lockrail:\n  lockrail setup"
+    )]
     Setup {
-        #[arg(long, help = "Apply the configuration changes")]
+        #[arg(long, hide = true)]
         apply: bool,
         #[arg(
             long,
             value_delimiter = ',',
-            default_value = "claude,codex,cursor",
-            help = "Comma-separated list of tools to protect"
+            default_value = "all",
+            help = "Comma-separated tools to protect: all, claude, codex, cursor, agy"
         )]
         tools: Vec<String>,
     },
@@ -1426,8 +1431,11 @@ fn install_shims(cli: &Cli, tools: &[String]) -> Result<serde_json::Value> {
     }))
 }
 
-fn ensure_default_agent(cli: &Cli) -> Result<serde_json::Value> {
-    let mut vault = Vault::open(vault_path(cli), password(cli)?)?;
+fn ensure_default_agent_with_password(
+    cli: &Cli,
+    vault_password: SecretString,
+) -> Result<serde_json::Value> {
+    let mut vault = Vault::open(vault_path(cli), vault_password)?;
     if let Some(agent) = vault.list_agents().first() {
         return Ok(serde_json::to_value(agent)?);
     }
@@ -1436,20 +1444,58 @@ fn ensure_default_agent(cli: &Cli) -> Result<serde_json::Value> {
     Ok(serde_json::to_value(agent.public_view())?)
 }
 
-fn setup_apply(cli: &Cli, tools: &[String]) -> Result<serde_json::Value> {
-    if !vault_path(cli).exists() {
-        let _ = Vault::init(vault_path(cli), password(cli)?, KdfParamsDoc::default())?;
-    } else {
-        let _ = Vault::open(vault_path(cli), password(cli)?)?;
+fn setup_tools(tools: &[String]) -> Vec<String> {
+    let mut selected = Vec::new();
+    for tool in tools {
+        if tool.eq_ignore_ascii_case("all") {
+            selected.extend(
+                ["claude", "codex", "cursor", "agy"]
+                    .iter()
+                    .map(|t| t.to_string()),
+            );
+        } else {
+            selected.push(tool.to_ascii_lowercase());
+        }
     }
-    let agent = ensure_default_agent(cli)?;
-    let shims = install_shims(cli, tools)?;
+    selected.sort();
+    selected.dedup();
+    selected
+}
+
+fn setup_apply(cli: &Cli, tools: &[String]) -> Result<serde_json::Value> {
+    let selected_tools = setup_tools(tools);
+    let vault_password = if !vault_path(cli).exists() {
+        password_for_init(cli)?
+    } else {
+        password(cli)?
+    };
+    if !vault_path(cli).exists() {
+        let _ = Vault::init(
+            vault_path(cli),
+            vault_password.clone(),
+            KdfParamsDoc::default(),
+        )?;
+        AuditLog::new(audit_path(cli)).append("vault.init", "", serde_json::json!({}))?;
+    } else {
+        let _ = Vault::open(vault_path(cli), vault_password.clone())?;
+    }
+    if !config_path(cli).exists() {
+        save_config(cli, &AppConfig::default())?;
+    }
+    let profile = ensure_local_profile(cli)?;
+    let agent = ensure_default_agent_with_password(cli, vault_password)?;
+    let shims = install_shims(cli, &selected_tools)?;
+    let doctor_report = doctor(cli);
     Ok(serde_json::json!({
         "status": "ready",
+        "profile": profile,
         "agent": agent,
+        "tools": selected_tools,
         "shims": shims,
+        "doctor": doctor_report,
         "next": [
-            "open a new terminal",
+            "open a new terminal if PATH changed",
+            "lockrail demo",
             "lockrail doctor",
             "claude",
             "codex",
@@ -3047,17 +3093,34 @@ async fn run(cli: Cli) -> Result<()> {
                 println!("  lockrail status");
             }
         }
-        Commands::Setup { apply, tools } => {
-            if *apply {
-                print_value(&cli, &setup_apply(&cli, tools)?)?;
-            } else {
-                print_value(
-                    &cli,
-                    &serde_json::json!({
-                        "one_command": "export LOCKRAIL_PASSWORD='long-local-password' && lockrail setup --apply",
-                        "daily_use": ["claude", "codex", "cursor", "agy"]
-                    }),
-                )?;
+        Commands::Setup { apply: _, tools } => {
+            let result = setup_apply(&cli, tools)?;
+            if cli.json {
+                print_value(&cli, &result)?;
+            } else if !cli.quiet {
+                println!("lockrail//setup complete");
+                println!("------------------------------------------------------------");
+                println!("[vault]    encrypted local store ready");
+                println!("[keys]     local agent identity ready");
+                println!("[network]  no account or Lockrail cloud required");
+                println!();
+                println!("tool shims");
+                for tool in result["tools"].as_array().into_iter().flatten() {
+                    if let Some(tool) = tool.as_str() {
+                        println!("  {tool:<8} armed");
+                    }
+                }
+                if let Some(path_prepend) = result["shims"]["path_prepend"].as_str() {
+                    println!();
+                    println!("shell path");
+                    println!("  {path_prepend}");
+                    println!("  # open a new terminal after adding this to your shell profile");
+                }
+                println!();
+                println!("next");
+                println!("  lockrail demo");
+                println!("  lockrail doctor");
+                println!("  claude   # or codex / cursor / agy if installed");
             }
         }
         Commands::Protect { tool, yes } => {
