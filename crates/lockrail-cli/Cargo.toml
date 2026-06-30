@@ -35,11 +35,11 @@ axum = { workspace = true }
 portable-pty = { workspace = true }
 uuid = { workspace = true }
 time = { workspace = true }
-lockrail-protocol = { version = "0.3.0", path = "../lockrail-protocol" }
-lockrail-vault = { version = "0.3.0", path = "../lockrail-vault" }
-lockrail-audit = { version = "0.3.0", path = "../lockrail-audit" }
-lockrail-relay = { version = "0.3.0", path = "../lockrail-relay" }
-lockrail-proxy = { version = "0.3.0", path = "../lockrail-proxy" }
+lockrail-protocol = { version = "0.3.2", path = "../lockrail-protocol" }
+lockrail-vault = { version = "0.3.2", path = "../lockrail-vault" }
+lockrail-audit = { version = "0.3.2", path = "../lockrail-audit" }
+lockrail-relay = { version = "0.3.2", path = "../lockrail-relay" }
+lockrail-proxy = { version = "0.3.2", path = "../lockrail-proxy" }
 base64ct = { workspace = true }
 crypto_box = { version = "0.9", features = ["seal"] }
 rand_core = { workspace = true }

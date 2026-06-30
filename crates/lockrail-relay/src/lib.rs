@@ -324,12 +324,13 @@ pub async fn perform_relay(state: RelayState, req: RelayRequest) -> Result<Relay
     // from using a short-TTL DNS record that points at an external IP during
     // the protocol check but resolves to an internal address when the TCP
     // connection is actually made.
-    {
+    let resolved_addrs = {
         use std::net::IpAddr;
         let host = url.host_str().unwrap_or_default();
         let port = url.port_or_known_default().unwrap_or(443);
-        let addrs: Vec<std::net::SocketAddr> =
-            tokio::net::lookup_host((host, port)).await?.collect();
+        let addrs = tokio::net::lookup_host((host, port))
+            .await?
+            .collect::<Vec<_>>();
         if addrs.is_empty() {
             return Err(anyhow!("DNS resolution returned no addresses for {host}"));
         }
@@ -349,7 +350,8 @@ pub async fn perform_relay(state: RelayState, req: RelayRequest) -> Result<Relay
                 ));
             }
         }
-    }
+        addrs
+    };
 
     if let Some(proof) = &proof_payload {
         state.replay_store.check_and_store(
@@ -380,8 +382,14 @@ pub async fn perform_relay(state: RelayState, req: RelayRequest) -> Result<Relay
     )?;
 
     let method = req.method.parse()?;
-    let mut builder = state
-        .client
+    let host = url
+        .host_str()
+        .ok_or_else(|| anyhow!("validated upstream URL has no host"))?;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .resolve_to_addrs(host, &resolved_addrs)
+        .build()?;
+    let mut builder = client
         .request(method, url.clone())
         .headers(headers)
         .timeout(Duration::from_secs(30));

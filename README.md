@@ -25,7 +25,7 @@ No cloud. No account. Single binary.
 
 ## Features
 
-- **Two interception modes** — PTY shim (wraps any CLI tool) or HTTPS proxy (`lockrail proxy`, port 8789)
+- **Two interception modes** — PTY shim (wraps any CLI tool) or conservative HTTPS proxy (`lockrail proxy`, port 8789)
 - **30+ detection patterns** — OpenAI, Anthropic, AWS, GCP, GitHub, npm, PyPI, HuggingFace, JWT, private keys, high-entropy strings
 - **Opaque handle round-trip** — `lockrail://secret/<name>/<fp>` replaces plaintext; model cannot reconstruct the original
 - **Local encrypted vault** — AES-256-GCM + Argon2id KDF (19,456 KiB, 2 iterations), file perms 0600, atomic writes with fsync
@@ -33,7 +33,7 @@ No cloud. No account. Single binary.
 - **SSRF + DNS rebinding protection** — relay blocks localhost, link-local, metadata endpoints, and rebinding attempts
 - **Hash-chained audit log** — SHA-256 chained events with signed receipts; `lockrail audit verify` detects any tampering
 - **Claude Code hooks** — UserPromptSubmit and PostToolUse hooks block secrets entering and leaving the model
-- **Works offline** — vault, relay, and proxy all run locally; no outbound calls required
+- **Works offline** — vault, relay, and proxy all run locally; no Lockrail cloud required
 - **Supports** Claude Code · Codex · Cursor · Antigravity · any MCP server
 
 ## Install
@@ -162,18 +162,18 @@ Agent makes an API call
 | Terminal stdin | Scanned and sealed before the AI tool sees it |
 | `.env` files | Handle-based sealing — safe for agent inspection |
 | Tool output / responses | PostToolUse hook scans before the model incorporates it |
-| All AI API traffic (proxy mode) | HTTPS intercept — scans every request and response body |
+| Supported AI API HTTPS hosts (proxy mode) | Scans uncompressed textual/JSON request and response bodies; streams, compressed bodies, and unknown binary content pass through unchanged |
 | Relay calls | LRAP token check · SSRF block · replay detection · usage cap |
 | Audit log | SHA-256 hash chain · signed receipts · tamper detection |
 
-**Not covered:** GUI flows outside the proxy, clipboard capture, keyloggers, or a fully compromised host while the vault is unlocked.
+**Not covered:** GUI flows outside the proxy, clipboard capture, keyloggers, compressed or streaming proxy bodies that cannot be safely rewritten, unsupported AI API hosts, or a fully compromised host while the vault is unlocked.
 
 ## Comparison
 
 | | Lockrail | ggshield ai-hook | Infisical Agent Vault | Doppler / Phase |
 |---|:---:|:---:|:---:|:---:|
 | Intercepts AI prompt context | ✓ | 4 tools | — | — |
-| HTTPS proxy for all AI traffic | ✓ | — | — | — |
+| HTTPS proxy for supported AI hosts | ✓ | — | — | — |
 | Opaque handle round-trip | ✓ | — | — | — |
 | Local vault, no server required | ✓ | — | — | — |
 | No account or cloud dependency | ✓ | — | — | — |

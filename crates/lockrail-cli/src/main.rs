@@ -32,7 +32,7 @@ use lockrail_protocol::seal::{
 use lockrail_protocol::{
     AgentKeypairDoc, CapabilityClaims, CapabilityToken, ProtocolError, now_unix,
 };
-use lockrail_proxy::{CaStore, ProxyConfig, install_ca_system, run_proxy};
+use lockrail_proxy::{CaStore, ProxyConfig, SecretSink, install_ca_system, run_proxy};
 use lockrail_relay::{FileReplayStore, FileUsageStore, RelayState, serve};
 use lockrail_vault::{KdfParamsDoc, Vault, VaultError, default_home, default_vault_path};
 
@@ -587,6 +587,11 @@ enum ProxyCommands {
     Start {
         #[arg(long, default_value = "127.0.0.1:8789", help = "Address to listen on")]
         listen: std::net::SocketAddr,
+        #[arg(
+            long,
+            help = "Allow binding the proxy to non-loopback interfaces; unsafe on shared networks"
+        )]
+        unsafe_public_listen: bool,
     },
     #[command(about = "Show proxy CA and configuration status")]
     Status,
@@ -924,6 +929,27 @@ fn write_json_pretty(path: &Path, value: &impl Serialize) -> Result<()> {
     Ok(())
 }
 
+fn write_json_pretty_atomic(path: &Path, value: &impl Serialize) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension("tmp");
+    {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&tmp)?;
+        file.write_all(&serde_json::to_vec_pretty(value)?)?;
+        file.sync_all()?;
+    }
+    fs::rename(&tmp, path)?;
+    if let Some(parent) = path.parent() {
+        std::fs::File::open(parent)?.sync_all()?;
+    }
+    Ok(())
+}
+
 fn ensure_local_profile(cli: &Cli) -> Result<LocalProfile> {
     let path = profile_path(cli);
     if path.exists() {
@@ -1129,6 +1155,37 @@ fn html_escape(text: &str) -> String {
         .collect()
 }
 
+fn collect_json_strings(value: &serde_json::Value, out: &mut Vec<String>) {
+    match value {
+        serde_json::Value::String(text) => out.push(text.clone()),
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_json_strings(item, out);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for item in map.values() {
+                collect_json_strings(item, out);
+            }
+        }
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {}
+    }
+}
+
+fn text_for_post_tool_use_scan(input: &str) -> String {
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(input) else {
+        return input.to_string();
+    };
+    let target = json.get("tool_response").unwrap_or(&json);
+    let mut strings = Vec::new();
+    collect_json_strings(target, &mut strings);
+    if strings.is_empty() {
+        target.to_string()
+    } else {
+        strings.join("\n")
+    }
+}
+
 fn save_sealed_findings(vault: &mut Vault, prefix: &str, findings: &[SecretFinding]) -> Result<()> {
     for finding in findings.iter().filter(|finding| finding.should_seal) {
         let name = format!("{prefix}/{}/{}", finding.kind, finding.fingerprint);
@@ -1139,6 +1196,18 @@ fn save_sealed_findings(vault: &mut Vault, prefix: &str, findings: &[SecretFindi
         }
     }
     Ok(())
+}
+
+struct VaultSecretSink {
+    vault_path: PathBuf,
+    password: SecretString,
+}
+
+impl SecretSink for VaultSecretSink {
+    fn save_findings(&self, prefix: &str, findings: &[SecretFinding]) -> Result<()> {
+        let mut vault = Vault::open(&self.vault_path, self.password.clone())?;
+        save_sealed_findings(&mut vault, prefix, findings)
+    }
 }
 
 fn scan_and_seal(
@@ -2041,7 +2110,16 @@ fn ai_install_hooks(tool: Option<&str>, quiet: bool) -> Result<serde_json::Value
         root.entry("hooks").or_insert_with(|| serde_json::json!({}));
     }
 
-    // Upsert one hook event entry.  Returns true if already present.
+    fn hook_command(value: &serde_json::Value) -> Option<&str> {
+        value
+            .get("hooks")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|hooks| hooks.first())
+            .and_then(|hook| hook.get("command"))
+            .and_then(serde_json::Value::as_str)
+    }
+
+    // Upsert one hook event entry. Returns true if the exact command is already present.
     fn insert_hook(settings: &mut serde_json::Value, event: &str, command: &str) -> Result<bool> {
         let entry = serde_json::json!({
             "hooks": [{ "type": "command", "command": command }]
@@ -2055,7 +2133,7 @@ fn ai_install_hooks(tool: Option<&str>, quiet: bool) -> Result<serde_json::Value
             .or_insert_with(|| serde_json::json!([]));
         let already = arr
             .as_array()
-            .map(|a| a.iter().any(|v| v.to_string().contains("lockrail")))
+            .map(|a| a.iter().any(|value| hook_command(value) == Some(command)))
             .unwrap_or(false);
         if !already {
             arr.as_array_mut()
@@ -2076,7 +2154,11 @@ fn ai_install_hooks(tool: Option<&str>, quiet: bool) -> Result<serde_json::Value
         &format!("{exe} hook post-tool-use"),
     )?;
 
-    fs::write(&settings_path, serde_json::to_vec_pretty(&settings)?)?;
+    if settings_path.exists() {
+        let backup_path = settings_path.with_extension("json.lockrail.bak");
+        fs::copy(&settings_path, backup_path)?;
+    }
+    write_json_pretty_atomic(&settings_path, &settings)?;
     if !quiet {
         eprintln!(
             "lockrail: installed UserPromptSubmit + PostToolUse hooks in {}",
@@ -3211,18 +3293,7 @@ async fn run(cli: Cli) -> Result<()> {
             }
             HookCommands::PostToolUse { prefix, aggressive } => {
                 let input = std::io::read_to_string(std::io::stdin())?;
-                // Claude Code sends JSON: {"tool_name":"...", "tool_input":{...}, "tool_response":{...}}
-                // Extract text content from the tool response to scan.
-                let scan_text_content =
-                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&input) {
-                        json.get("tool_response")
-                            .and_then(|r| r.get("output").or_else(|| r.get("content")))
-                            .and_then(|o| o.as_str())
-                            .map(|s| s.to_string())
-                            .unwrap_or(input)
-                    } else {
-                        input
-                    };
+                let scan_text_content = text_for_post_tool_use_scan(&input);
                 let findings = scan_text(
                     &scan_text_content,
                     ScanOptions {
@@ -3240,10 +3311,8 @@ async fn run(cli: Cli) -> Result<()> {
                             protection_mode: true,
                         },
                     );
-                    if !cli.quiet {
-                        let mut vault = Vault::open(vault_path(&cli), password(&cli)?)?;
-                        save_sealed_findings(&mut vault, prefix, &sealed.findings)?;
-                    }
+                    let mut vault = Vault::open(vault_path(&cli), password(&cli)?)?;
+                    save_sealed_findings(&mut vault, prefix, &sealed.findings)?;
                     AuditLog::new(audit_path(&cli)).append(
                         "hook.post_tool_use.blocked",
                         "tool_output",
@@ -3673,15 +3742,28 @@ async fn run(cli: Cli) -> Result<()> {
                     }
                 }
             }
-            ProxyCommands::Start { listen } => {
+            ProxyCommands::Start {
+                listen,
+                unsafe_public_listen,
+            } => {
+                if !unsafe_public_listen && !listen.ip().is_loopback() {
+                    return Err(anyhow!(
+                        "refusing to bind proxy to non-loopback address {listen}; pass --unsafe-public-listen only on a trusted network"
+                    ));
+                }
                 let ca_store = CaStore::load(&ca_path(&cli))
                     .map_err(|_| anyhow!("run 'lockrail proxy install-ca' first"))?;
                 let ca = std::sync::Arc::new(lockrail_proxy::LocalCa::new(ca_store));
+                let secret_sink = std::sync::Arc::new(VaultSecretSink {
+                    vault_path: vault_path(&cli),
+                    password: password(&cli)?,
+                });
                 print_value(
                     &cli,
                     &serde_json::json!({
                         "status": "starting",
                         "listen": listen.to_string(),
+                        "public_listen_enabled": unsafe_public_listen,
                         "intercepting": lockrail_proxy::proxy::AI_INTERCEPT_HOSTS,
                         "hint": format!("export HTTPS_PROXY=http://{listen}"),
                     }),
@@ -3689,6 +3771,8 @@ async fn run(cli: Cli) -> Result<()> {
                 run_proxy(ProxyConfig {
                     listen_addr: *listen,
                     ca,
+                    allow_non_loopback: *unsafe_public_listen,
+                    secret_sink: Some(secret_sink),
                 })
                 .await?;
             }
@@ -3827,5 +3911,23 @@ mod tests {
         assert_eq!(args[0], "-p");
         assert!(args[1].contains("lockrail://secret/openai-key/"));
         assert!(!args[1].contains("sk-proj-demo-abcdefghijklmnopqrstuvwxyz123456"));
+    }
+
+    #[test]
+    fn post_tool_use_scan_extracts_nested_json_strings() {
+        let input = serde_json::json!({
+            "tool_name": "shell",
+            "tool_response": {
+                "content": [
+                    {"type": "text", "text": "safe"},
+                    {"nested": {"stderr": "OPENAI_API_KEY=sk-proj-demo-abcdefghijklmnopqrstuvwxyz123456"}}
+                ]
+            }
+        })
+        .to_string();
+
+        let extracted = text_for_post_tool_use_scan(&input);
+
+        assert!(extracted.contains("sk-proj-demo-abcdefghijklmnopqrstuvwxyz123456"));
     }
 }

@@ -824,7 +824,7 @@ mod tests {
             .unwrap();
         let debug = format!("{vault:?}");
         assert!(!debug.contains("sk-secret-123456789"));
-        assert!(!debug.contains("pw"));
+        assert!(debug.contains("password: \"[REDACTED]\""));
         assert!(debug.contains("[REDACTED]"));
     }
 

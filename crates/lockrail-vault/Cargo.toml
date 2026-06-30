@@ -35,7 +35,7 @@ time = { workspace = true }
 uuid = { workspace = true }
 hex = { workspace = true }
 fs2 = { workspace = true }
-lockrail-protocol = { version = "0.3.0", path = "../lockrail-protocol" }
+lockrail-protocol = { version = "0.3.2", path = "../lockrail-protocol" }
 
 [dev-dependencies]
 tempfile = { workspace = true }

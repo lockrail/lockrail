@@ -1,8 +1,10 @@
 use anyhow::{Context, Result};
-use http_body_util::{BodyExt, Full};
+use http_body_util::{BodyExt, Full, combinators::BoxBody};
 use hyper::body::Bytes;
+use hyper::header::{CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE, TRANSFER_ENCODING};
 use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
+use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
@@ -13,7 +15,7 @@ use tokio_rustls::{TlsAcceptor, TlsConnector};
 use tracing::{info, warn};
 
 use super::ca::{DynamicCertResolver, LocalCa};
-use lockrail_protocol::seal::{SealOptions, seal_text};
+use lockrail_protocol::seal::{SealOptions, SecretFinding, seal_text};
 
 /// The AI API hostnames whose HTTPS traffic is intercepted and scanned.
 pub const AI_INTERCEPT_HOSTS: &[&str] = &[
@@ -30,29 +32,48 @@ pub const AI_INTERCEPT_HOSTS: &[&str] = &[
 pub struct ProxyConfig {
     pub listen_addr: SocketAddr,
     pub ca: Arc<LocalCa>,
+    pub allow_non_loopback: bool,
+    pub secret_sink: Option<Arc<dyn SecretSink>>,
+}
+
+pub trait SecretSink: Send + Sync {
+    fn save_findings(&self, prefix: &str, findings: &[SecretFinding]) -> Result<()>;
 }
 
 pub async fn run_proxy(config: ProxyConfig) -> Result<()> {
     // Install the ring crypto provider as the process default (idempotent).
     let _ = tokio_rustls::rustls::crypto::ring::default_provider().install_default();
 
+    if !config.allow_non_loopback && !config.listen_addr.ip().is_loopback() {
+        return Err(anyhow::anyhow!(
+            "refusing to bind proxy to non-loopback address {}; pass --unsafe-public-listen only on a trusted network",
+            config.listen_addr
+        ));
+    }
+
     let listener = TcpListener::bind(config.listen_addr).await?;
     let ca = config.ca;
+    let secret_sink = config.secret_sink;
 
     info!(addr = %config.listen_addr, "lockrail proxy listening");
 
     loop {
         let (stream, peer) = listener.accept().await?;
         let ca = ca.clone();
+        let secret_sink = secret_sink.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(stream, ca).await {
+            if let Err(e) = handle_connection(stream, ca, secret_sink).await {
                 warn!(peer = %peer, error = %e, "proxy connection error");
             }
         });
     }
 }
 
-async fn handle_connection(mut stream: TcpStream, ca: Arc<LocalCa>) -> Result<()> {
+async fn handle_connection(
+    mut stream: TcpStream,
+    ca: Arc<LocalCa>,
+    secret_sink: Option<Arc<dyn SecretSink>>,
+) -> Result<()> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
     let mut buf_stream = BufReader::new(&mut stream);
@@ -88,7 +109,7 @@ async fn handle_connection(mut stream: TcpStream, ca: Arc<LocalCa>) -> Result<()
         .await?;
 
     if AI_INTERCEPT_HOSTS.contains(&host) {
-        intercept_tls(stream, host, ca).await
+        intercept_tls(stream, host, ca, secret_sink).await
     } else {
         // Pass-through tunnel for non-AI hosts
         let port: u16 = host_port
@@ -107,7 +128,12 @@ async fn handle_connection(mut stream: TcpStream, ca: Arc<LocalCa>) -> Result<()
     }
 }
 
-async fn intercept_tls(client_tcp: TcpStream, host: &str, ca: Arc<LocalCa>) -> Result<()> {
+async fn intercept_tls(
+    client_tcp: TcpStream,
+    host: &str,
+    ca: Arc<LocalCa>,
+    secret_sink: Option<Arc<dyn SecretSink>>,
+) -> Result<()> {
     // Accept TLS from the AI tool using a dynamically-generated leaf cert.
     let resolver = Arc::new(DynamicCertResolver::new(ca));
     let server_cfg = ServerConfig::builder()
@@ -141,11 +167,80 @@ async fn intercept_tls(client_tcp: TcpStream, host: &str, ca: Arc<LocalCa>) -> R
         TokioIo::new(client_tls),
         TokioIo::new(server_tls),
         host.to_string(),
+        secret_sink,
     )
     .await
 }
 
-async fn relay_http<C, S>(client_io: C, server_io: S, host: String) -> Result<()>
+fn body_is_rewritable(headers: &hyper::HeaderMap) -> bool {
+    let content_encoding = headers
+        .get(CONTENT_ENCODING)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.trim().to_ascii_lowercase());
+    if !matches!(content_encoding.as_deref(), None | Some("identity")) {
+        return false;
+    }
+
+    let Some(content_type) = headers
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+    else {
+        return true;
+    };
+    let content_type = content_type
+        .split(';')
+        .next()
+        .unwrap_or(content_type)
+        .trim()
+        .to_ascii_lowercase();
+    matches!(
+        content_type.as_str(),
+        "application/json"
+            | "application/x-www-form-urlencoded"
+            | "application/xml"
+            | "text/plain"
+            | "text/html"
+            | "text/css"
+            | "text/javascript"
+    ) || content_type.ends_with("+json")
+}
+
+fn event_stream(headers: &hyper::HeaderMap) -> bool {
+    headers
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| {
+            value
+                .split(';')
+                .next()
+                .unwrap_or(value)
+                .trim()
+                .eq_ignore_ascii_case("text/event-stream")
+        })
+        .unwrap_or(false)
+}
+
+fn set_rewritten_body_headers(headers: &mut hyper::HeaderMap, len: usize) {
+    headers.remove(CONTENT_LENGTH);
+    headers.remove(TRANSFER_ENCODING);
+    headers.insert(
+        CONTENT_LENGTH,
+        hyper::header::HeaderValue::from_str(&len.to_string()).expect("valid content length"),
+    );
+}
+
+fn boxed_full(bytes: Bytes) -> BoxBody<Bytes, hyper::Error> {
+    Full::new(bytes)
+        .map_err(|never: Infallible| match never {})
+        .boxed()
+}
+
+async fn relay_http<C, S>(
+    client_io: C,
+    server_io: S,
+    host: String,
+    secret_sink: Option<Arc<dyn SecretSink>>,
+) -> Result<()>
 where
     C: hyper::rt::Read + hyper::rt::Write + Unpin + Send + 'static,
     S: hyper::rt::Read + hyper::rt::Write + Unpin + Send + 'static,
@@ -174,26 +269,36 @@ where
     let service = hyper::service::service_fn(move |req: Request<hyper::body::Incoming>| {
         let sender = sender.clone();
         let host = host.clone();
+        let secret_sink = secret_sink.clone();
         async move {
-            let (parts, body) = req.into_parts();
+            let (mut parts, body) = req.into_parts();
             let body_bytes = body
                 .collect()
                 .await
                 .map_err(|e| anyhow::anyhow!("{e}"))?
                 .to_bytes();
 
-            // Scan and seal secrets in the outbound request body.
-            let body_str = String::from_utf8_lossy(&body_bytes);
-            let sealed_req = seal_text(&body_str, SealOptions::default());
-            let sealed_req_count = sealed_req.findings.iter().filter(|f| f.should_seal).count();
-            if sealed_req_count > 0 {
-                info!(
-                    host = %host,
-                    sealed = sealed_req_count,
-                    "sealed secrets in outbound AI API request"
-                );
-            }
-            let safe_body = Bytes::from(sealed_req.safe_text.into_bytes());
+            let safe_body = if body_is_rewritable(&parts.headers) {
+                let body_str = String::from_utf8_lossy(&body_bytes);
+                let sealed_req = seal_text(&body_str, SealOptions::default());
+                let sealed_req_count = sealed_req.findings.iter().filter(|f| f.should_seal).count();
+                if sealed_req_count > 0 {
+                    if let Some(sink) = &secret_sink {
+                        sink.save_findings("proxy/request", &sealed_req.findings)
+                            .map_err(|e| anyhow::anyhow!("{e}"))?;
+                    }
+                    info!(
+                        host = %host,
+                        sealed = sealed_req_count,
+                        "sealed secrets in outbound AI API request"
+                    );
+                }
+                let safe_body = Bytes::from(sealed_req.safe_text.into_bytes());
+                set_rewritten_body_headers(&mut parts.headers, safe_body.len());
+                safe_body
+            } else {
+                body_bytes
+            };
             let upstream_req = Request::from_parts(parts, Full::new(safe_body));
 
             // Forward to the real server.
@@ -204,7 +309,12 @@ where
                     .map_err(|e| anyhow::anyhow!("{e}"))?
             };
 
-            let (resp_parts, resp_body) = upstream_resp.into_parts();
+            let (mut resp_parts, resp_body) = upstream_resp.into_parts();
+            if !body_is_rewritable(&resp_parts.headers) || event_stream(&resp_parts.headers) {
+                return Ok::<Response<BoxBody<Bytes, hyper::Error>>, anyhow::Error>(
+                    Response::from_parts(resp_parts, resp_body.boxed()),
+                );
+            }
             let resp_bytes = resp_body
                 .collect()
                 .await
@@ -220,6 +330,10 @@ where
                 .filter(|f| f.should_seal)
                 .count();
             if sealed_resp_count > 0 {
+                if let Some(sink) = &secret_sink {
+                    sink.save_findings("proxy/response", &sealed_resp.findings)
+                        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                }
                 info!(
                     host = %host,
                     sealed = sealed_resp_count,
@@ -227,10 +341,11 @@ where
                 );
             }
             let safe_resp_bytes = Bytes::from(sealed_resp.safe_text.into_bytes());
+            set_rewritten_body_headers(&mut resp_parts.headers, safe_resp_bytes.len());
 
-            Ok::<Response<Full<Bytes>>, anyhow::Error>(Response::from_parts(
+            Ok::<Response<BoxBody<Bytes, hyper::Error>>, anyhow::Error>(Response::from_parts(
                 resp_parts,
-                Full::new(safe_resp_bytes),
+                boxed_full(safe_resp_bytes),
             ))
         }
     });
@@ -241,4 +356,57 @@ where
         .serve_connection(client_io, service)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ca::CaStore;
+    use hyper::HeaderMap;
+    use hyper::header::HeaderValue;
+
+    #[test]
+    fn body_is_rewritable_rejects_compressed_payloads() {
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        headers.insert(CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+
+        assert!(!body_is_rewritable(&headers));
+    }
+
+    #[test]
+    fn body_is_rewritable_rejects_event_streams() {
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("text/event-stream"));
+
+        assert!(!body_is_rewritable(&headers));
+        assert!(event_stream(&headers));
+    }
+
+    #[test]
+    fn set_rewritten_body_headers_replaces_length_and_transfer_encoding() {
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_LENGTH, HeaderValue::from_static("999"));
+        headers.insert(TRANSFER_ENCODING, HeaderValue::from_static("chunked"));
+
+        set_rewritten_body_headers(&mut headers, 42);
+
+        assert_eq!(headers.get(CONTENT_LENGTH).unwrap(), "42");
+        assert!(!headers.contains_key(TRANSFER_ENCODING));
+    }
+
+    #[tokio::test]
+    async fn run_proxy_rejects_non_loopback_listen_without_explicit_allow() {
+        let ca = Arc::new(LocalCa::new(CaStore::generate().unwrap()));
+        let err = run_proxy(ProxyConfig {
+            listen_addr: "0.0.0.0:0".parse().unwrap(),
+            ca,
+            allow_non_loopback: false,
+            secret_sink: None,
+        })
+        .await
+        .unwrap_err();
+
+        assert!(err.to_string().contains("refusing to bind proxy"));
+    }
 }

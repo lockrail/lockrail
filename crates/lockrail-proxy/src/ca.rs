@@ -4,6 +4,8 @@ use rcgen::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fs::{self, File, OpenOptions};
+use std::io::Write;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tokio_rustls::rustls::{
@@ -34,20 +36,35 @@ impl CaStore {
 
     pub fn save(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+            fs::create_dir_all(parent)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+            }
         }
-        std::fs::write(path, serde_json::to_vec_pretty(self)?)?;
+        let tmp = path.with_extension("tmp");
+        let mut options = OpenOptions::new();
+        options.write(true).create(true).truncate(true);
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&tmp)?;
+        file.write_all(&serde_json::to_vec_pretty(self)?)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&tmp, path)?;
+        if let Some(parent) = path.parent() {
+            File::open(parent)?.sync_all()?;
         }
         Ok(())
     }
 
     pub fn load(path: &Path) -> Result<Self> {
         let bytes =
-            std::fs::read(path).context("CA store not found — run 'lockrail proxy install-ca'")?;
+            fs::read(path).context("CA store not found — run 'lockrail proxy install-ca'")?;
         Ok(serde_json::from_slice(&bytes)?)
     }
 

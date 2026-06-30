@@ -4,4 +4,4 @@ pub mod proxy;
 
 pub use ca::{CaStore, LocalCa};
 pub use install::install_ca_system;
-pub use proxy::{ProxyConfig, run_proxy};
+pub use proxy::{ProxyConfig, SecretSink, run_proxy};
