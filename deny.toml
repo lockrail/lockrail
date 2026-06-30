@@ -20,7 +20,10 @@ allow = [
 confidence-threshold = 0.8
 
 [bans]
-multiple-versions = "warn"
+# Duplicate transitive versions are expected in the current CLI graph because
+# crypto, TLS, PTY, and platform crates do not all move in lockstep. Keep this
+# non-blocking so the security workflow fails on actionable risks.
+multiple-versions = "allow"
 wildcards = "deny"
 
 [sources]
