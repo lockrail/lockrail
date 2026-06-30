@@ -25,7 +25,6 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 time = { workspace = true }
 fs2 = { workspace = true }
-lockrail-protocol = { version = "0.3.3", path = "../lockrail-protocol" }
 
 [dev-dependencies]
 tempfile = { workspace = true }
