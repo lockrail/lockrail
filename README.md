@@ -38,18 +38,17 @@ No cloud. No account. Single binary.
 
 ## Install
 
-Fast path: download the release binary. No Rust toolchain, no Cargo dependency stream.
+Fast path: one command downloads Lockrail and auto-configures this machine. No Rust
+toolchain, no Cargo dependency stream, no password prompt, no account.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/lockrail/lockrail/main/install.sh | sh
-lockrail setup
 ```
 
 Windows PowerShell:
 
 ```powershell
 irm https://raw.githubusercontent.com/lockrail/lockrail/main/install.ps1 | iex
-lockrail setup
 ```
 
 Source build fallback:
@@ -68,9 +67,13 @@ Or download a prebuilt binary manually from [Releases](https://github.com/lockra
 ## Quickstart
 
 ```bash
-lockrail setup   # creates local vault and installs shims
-lockrail demo    # see interception in action
+lockrail demo    # see interception in action after the installer finishes
 ```
+
+The installer runs `lockrail setup` for you. That setup command generates a random
+local vault key, creates the encrypted vault, generates local agent identity, and
+installs shims for Claude, Codex, Cursor, and Antigravity. The generated key stays
+on your machine at `~/.lockrail/vault.key` with private file permissions.
 
 Or use the HTTPS proxy instead of PTY shims:
 
@@ -101,9 +104,7 @@ Agent makes an API call
 
 | Command | Description |
 |---|---|
-| `lockrail setup` | One-command setup — create vault, generate keys, install shims |
-| `lockrail init` | First-time setup — create vault, generate keys |
-| `lockrail protect --tool all` | Install PTY shims for claude, codex, cursor, agy |
+| `lockrail setup` | Auto-configure this machine: local vault key, encrypted vault, agent keys, shims |
 | `lockrail ai hooks` | Install Claude Code UserPromptSubmit + PostToolUse hooks |
 | `lockrail ai enable` | Install Lockrail skill file into Claude/Codex/Cursor config |
 | `lockrail status` | Vault state, installed tools, recent activity |

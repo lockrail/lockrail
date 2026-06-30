@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-07-01
+
+### Changed
+- Release installers now run `lockrail setup` automatically after installing the binary, so the normal install path is a single command.
+- `lockrail setup` now generates a random local vault key and stores it at `~/.lockrail/vault.key` with private file permissions by default.
+- Vault-opening commands now reuse the generated local key automatically; users no longer need to export `LOCKRAIL_PASSWORD` for normal use.
+- README and quickstart now present the simple path first and keep Cargo as the source-build fallback.
+
 ## [0.3.4] - 2026-07-01
 
 ### Changed
@@ -74,7 +82,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial local vault and secret scanning prototype
 
-[Unreleased]: https://github.com/lockrail/lockrail/compare/v0.3.4...HEAD
+[Unreleased]: https://github.com/lockrail/lockrail/compare/v0.3.5...HEAD
+[0.3.5]: https://github.com/lockrail/lockrail/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/lockrail/lockrail/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/lockrail/lockrail/compare/041225b...v0.3.3
 [0.3.2]: https://github.com/lockrail/lockrail/compare/v0.2.0...041225b

@@ -199,7 +199,7 @@ struct Cli {
     #[arg(
         long,
         env = "LOCKRAIL_PASSWORD",
-        help = "Vault password (prefer interactive prompt)"
+        help = "Advanced: override the generated local vault key"
     )]
     password: Option<String>,
     #[arg(
@@ -230,10 +230,12 @@ enum Commands {
         fast_kdf_test_only: bool,
     },
     #[command(
-        about = "One-command setup: create vault, install shims, and print next steps",
-        long_about = "Creates the local encrypted vault, generates local agent keys, installs\n\
+        about = "One-command setup: auto-configure Lockrail for this machine",
+        long_about = "Auto-configures Lockrail for this machine: generates a local vault key,\n\
+                      creates the encrypted vault, generates local agent keys, installs\n\
                       shims for Claude, Codex, Cursor, and Antigravity, and prints the\n\
-                      PATH command if your shell needs it.\n\n\
+                      PATH command if your shell needs it. No account and no password\n\
+                      prompt are required by default.\n\n\
                       Start here after installing Lockrail:\n  lockrail setup"
     )]
     Setup {
@@ -870,6 +872,10 @@ fn profile_path(cli: &Cli) -> PathBuf {
     home(cli).join("profile.json")
 }
 
+fn vault_key_path(cli: &Cli) -> PathBuf {
+    home(cli).join("vault.key")
+}
+
 fn prompt_line(prompt: &str) -> Result<String> {
     print!("{prompt}");
     std::io::stdout().flush()?;
@@ -891,18 +897,85 @@ fn password_for_init(cli: &Cli) -> Result<SecretString> {
     if let Some(password) = &cli.password {
         return Ok(SecretString::from(password.clone()));
     }
-    let entered = prompt_line("Choose a local Lockrail password: ")?;
-    if entered.is_empty() {
-        return Err(anyhow!("password is required"));
-    }
-    Ok(SecretString::from(entered))
+    ensure_local_vault_key(cli)
 }
 
 fn password(cli: &Cli) -> Result<SecretString> {
-    cli.password
-        .clone()
-        .map(SecretString::from)
-        .ok_or_else(|| anyhow!("provide --password or LOCKRAIL_PASSWORD"))
+    if let Some(password) = &cli.password {
+        return Ok(SecretString::from(password.clone()));
+    }
+    read_local_vault_key(cli)?.ok_or_else(|| {
+        anyhow!(
+            "Lockrail is not configured yet. Run `lockrail setup` once; it will create the local vault key automatically."
+        )
+    })
+}
+
+fn generated_vault_key() -> String {
+    use rand_core::RngCore;
+
+    let mut bytes = [0u8; 32];
+    rand_core::OsRng.fill_bytes(&mut bytes);
+    hex::encode(bytes)
+}
+
+fn read_local_vault_key(cli: &Cli) -> Result<Option<SecretString>> {
+    let path = vault_key_path(cli);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let key = fs::read_to_string(&path)
+        .with_context(|| format!("read local vault key at {}", path.display()))?
+        .trim()
+        .to_string();
+    if key.is_empty() {
+        return Err(anyhow!(
+            "local vault key is empty at {}; remove it and run `lockrail setup` again",
+            path.display()
+        ));
+    }
+    Ok(Some(SecretString::from(key)))
+}
+
+fn ensure_local_vault_key(cli: &Cli) -> Result<SecretString> {
+    if let Some(existing) = read_local_vault_key(cli)? {
+        return Ok(existing);
+    }
+    let path = vault_key_path(cli);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+        }
+    }
+    let key = generated_vault_key();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+            .with_context(|| format!("create local vault key at {}", path.display()))?;
+        file.write_all(key.as_bytes())?;
+        file.write_all(b"\n")?;
+        file.sync_all()?;
+    }
+    #[cfg(not(unix))]
+    {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .with_context(|| format!("create local vault key at {}", path.display()))?;
+        file.write_all(key.as_bytes())?;
+        file.write_all(b"\n")?;
+        file.sync_all()?;
+    }
+    Ok(SecretString::from(key))
 }
 
 fn print_value(cli: &Cli, value: &serde_json::Value) -> Result<()> {
@@ -1486,8 +1559,18 @@ fn setup_apply(cli: &Cli, tools: &[String]) -> Result<serde_json::Value> {
     let agent = ensure_default_agent_with_password(cli, vault_password)?;
     let shims = install_shims(cli, &selected_tools)?;
     let doctor_report = doctor(cli);
+    let credential_mode = if cli.password.is_some() {
+        "user_supplied_password"
+    } else {
+        "generated_local_key"
+    };
     Ok(serde_json::json!({
         "status": "ready",
+        "credential_mode": credential_mode,
+        "vault_key": {
+            "path": vault_key_path(cli),
+            "stored_locally": cli.password.is_none()
+        },
         "profile": profile,
         "agent": agent,
         "tools": selected_tools,
@@ -1511,11 +1594,7 @@ fn init_lockrail(
     skip_shims: bool,
     fast_kdf_test_only: bool,
 ) -> Result<serde_json::Value> {
-    let init_password = if yes {
-        password(cli)?
-    } else {
-        password_for_init(cli)?
-    };
+    let init_password = password_for_init(cli)?;
     let kdf = if fast_kdf_test_only {
         KdfParamsDoc::test_fast()
     } else {
@@ -1870,6 +1949,10 @@ fn doctor(cli: &Cli) -> serde_json::Value {
         "vault_exists": vault_exists,
         "vault_permissions": permissions_mode(&vault_path(cli)).map(|m| format!("{:04o}", m)),
         "vault_permissions_ok": permissions_mode(&vault_path(cli)).map(|mode| mode == 0o600).unwrap_or(vault_exists),
+        "vault_key_exists": vault_key_path(cli).exists(),
+        "vault_key_permissions": permissions_mode(&vault_key_path(cli)).map(|m| format!("{:04o}", m)),
+        "vault_key_permissions_ok": permissions_mode(&vault_key_path(cli)).map(|mode| mode == 0o600).unwrap_or(!vault_key_path(cli).exists()),
+        "vault_key_auto_managed": cli.password.is_none() && std::env::var("LOCKRAIL_PASSWORD").is_err(),
         "audit_exists": audit_exists,
         "audit_verify": audit_verify,
         "config_valid": config_valid,
@@ -1881,7 +1964,7 @@ fn doctor(cli: &Cli) -> serde_json::Value {
         "real_codex_found": find_real_command(cli, "codex").is_some(),
         "real_cursor_found": find_real_command(cli, "cursor").is_some(),
         "security_defaults_enabled": security_defaults_enabled,
-        "lockrail_password_set": cli.password.is_some() || std::env::var("LOCKRAIL_PASSWORD").is_ok(),
+        "vault_credential_available": cli.password.is_some() || std::env::var("LOCKRAIL_PASSWORD").is_ok() || vault_key_path(cli).exists(),
     });
     let overall_ok = vault_exists
         && config_valid
@@ -2799,7 +2882,7 @@ async fn ui_demo(State(state): State<UiState>) -> Html<String> {
         }
         Err(e) => {
             content.push_str(&format!(
-                "<div class=\"alert alert-info\">Run <code>lockrail init</code> first. Error: {}</div>",
+                "<div class=\"alert alert-info\">Run <code>lockrail setup</code> once. Error: {}</div>",
                 html_escape(&redact_for_logs(&e.to_string()))
             ));
         }
@@ -3101,6 +3184,11 @@ async fn run(cli: Cli) -> Result<()> {
                 println!("lockrail//setup complete");
                 println!("------------------------------------------------------------");
                 println!("[vault]    encrypted local store ready");
+                if result["credential_mode"] == "generated_local_key" {
+                    println!("[key]      generated and stored locally");
+                } else {
+                    println!("[key]      using supplied password");
+                }
                 println!("[keys]     local agent identity ready");
                 println!("[network]  no account or Lockrail cloud required");
                 println!();
@@ -3119,7 +3207,6 @@ async fn run(cli: Cli) -> Result<()> {
                 println!();
                 println!("next");
                 println!("  lockrail demo");
-                println!("  lockrail doctor");
                 println!("  claude   # or codex / cursor / agy if installed");
             }
         }

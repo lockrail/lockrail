@@ -26,9 +26,9 @@ axum = { workspace = true }
 reqwest = { workspace = true }
 tracing = { workspace = true }
 fs2 = { workspace = true }
-lockrail-protocol = { version = "0.3.4", path = "../lockrail-protocol" }
-lockrail-vault = { version = "0.3.4", path = "../lockrail-vault" }
-lockrail-audit = { version = "0.3.4", path = "../lockrail-audit" }
+lockrail-protocol = { version = "0.3.5", path = "../lockrail-protocol" }
+lockrail-vault = { version = "0.3.5", path = "../lockrail-vault" }
+lockrail-audit = { version = "0.3.5", path = "../lockrail-audit" }
 
 [dev-dependencies]
 tempfile = { workspace = true }

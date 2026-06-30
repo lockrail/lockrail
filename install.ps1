@@ -86,10 +86,16 @@ try {
     Write-Host "Run 'lockrail --version' to verify the install" -ForegroundColor Yellow
 }
 
+Write-Step "08" "auto-configuring local firewall"
+& "$InstallDir\$Binary" setup
+if ($LASTEXITCODE -ne 0) {
+    Write-Fail "setup failed; run $InstallDir\$Binary setup for details"
+}
+
 Write-Host ""
 Write-Host "next commands" -ForegroundColor White
-Write-Host "  lockrail setup"
 Write-Host "  lockrail demo"
 Write-Host "  lockrail ui"
+Write-Host "  claude   # or codex / cursor / agy if installed"
 Write-Host ""
 Write-Ok "bootstrap complete"

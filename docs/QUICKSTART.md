@@ -6,14 +6,12 @@ macOS / Linux:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/lockrail/lockrail/main/install.sh | sh
-lockrail setup
 ```
 
 Windows PowerShell:
 
 ```powershell
 irm https://raw.githubusercontent.com/lockrail/lockrail/main/install.ps1 | iex
-lockrail setup
 ```
 
 Fallback if you want to build from source:
@@ -22,6 +20,10 @@ Fallback if you want to build from source:
 cargo install lockrail
 lockrail setup
 ```
+
+The release installer runs setup automatically. Setup generates a random local
+vault key, creates the encrypted vault, generates local agent identity, and
+installs shims for Claude, Codex, Cursor, and Antigravity.
 
 Homebrew is not supported yet. Do not run `brew tap lockrail/tap`; that tap does not exist.
 

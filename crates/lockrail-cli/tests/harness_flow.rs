@@ -5,6 +5,12 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 fn lockrail_cmd(home: &Path, password: &str) -> Command {
+    let mut cmd = lockrail_cmd_auto(home);
+    cmd.env("LOCKRAIL_PASSWORD", password);
+    cmd
+}
+
+fn lockrail_cmd_auto(home: &Path) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_lockrail"));
     let shim_dir = home.join("bin");
     let existing_path = std::env::var_os("PATH").unwrap_or_default();
@@ -18,7 +24,7 @@ fn lockrail_cmd(home: &Path, password: &str) -> Command {
     )
     .expect("join PATH");
     cmd.env("LOCKRAIL_HOME", home)
-        .env("LOCKRAIL_PASSWORD", password)
+        .env_remove("LOCKRAIL_PASSWORD")
         .env("PATH", path);
     cmd
 }
@@ -76,15 +82,16 @@ fn assert_secret_absent(dir: &Path, needle: &str) {
 fn setup_demo_and_status_work_from_clean_home() {
     let temp_home = tempfile::tempdir().expect("temp home");
     let home = temp_home.path();
-    let password = "demo-password";
 
     let setup = json_output(
-        lockrail_cmd(home, password)
+        lockrail_cmd_auto(home)
             .args(["setup", "--json"])
             .output()
             .expect("setup"),
     );
     assert_eq!(setup["status"], "ready");
+    assert_eq!(setup["credential_mode"], "generated_local_key");
+    assert!(home.join("vault.key").exists());
     assert!(
         setup["tools"]
             .as_array()
@@ -101,7 +108,7 @@ fn setup_demo_and_status_work_from_clean_home() {
     );
 
     let demo = json_output(
-        lockrail_cmd(home, password)
+        lockrail_cmd_auto(home)
             .args(["demo", "--json"])
             .output()
             .expect("demo"),
@@ -109,7 +116,7 @@ fn setup_demo_and_status_work_from_clean_home() {
     assert!(demo.as_array().expect("demo array").len() >= 4);
 
     let status = json_output(
-        lockrail_cmd(home, password)
+        lockrail_cmd_auto(home)
             .args(["status", "--json"])
             .output()
             .expect("status"),

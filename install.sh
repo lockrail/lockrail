@@ -154,11 +154,14 @@ if "${INSTALL_DIR}/${BIN_FILE}" --version >/dev/null 2>&1; then
   ok "$("${INSTALL_DIR}/${BIN_FILE}" --version)"
 fi
 
+step "08" "auto-configuring local firewall"
+PATH="${INSTALL_DIR}:$PATH" "${INSTALL_DIR}/${BIN_FILE}" setup || die "setup failed; run ${INSTALL_DIR}/${BIN_FILE} setup for details"
+
 say ""
 say "${C_BOLD}next commands${C_RESET}"
-say "  lockrail setup"
 say "  lockrail demo"
 say "  lockrail ui"
+say "  claude   # or codex / cursor / agy if installed"
 
 if [ "$PATH_OK" -eq 0 ]; then
   say ""
