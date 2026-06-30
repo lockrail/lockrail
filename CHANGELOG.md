@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-07-01
+
+### Changed
+- `lockrail setup` now recovers from older password-based local state by archiving the previous `~/.lockrail` directory and creating a fresh auto-managed setup when no generated vault key exists.
+- Installers now ignore stale `LOCKRAIL_PASSWORD` values during automatic setup, so old shell exports do not poison new installs.
+- Installers now print clearer recovery commands for setup failures and warn when the shell resolves `lockrail` to a different binary than the one just installed.
+- README now documents update, stale PATH, unset-password, and reset flows.
+
 ## [0.3.5] - 2026-07-01
 
 ### Changed
@@ -82,7 +90,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial local vault and secret scanning prototype
 
-[Unreleased]: https://github.com/lockrail/lockrail/compare/v0.3.5...HEAD
+[Unreleased]: https://github.com/lockrail/lockrail/compare/v0.3.6...HEAD
+[0.3.6]: https://github.com/lockrail/lockrail/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/lockrail/lockrail/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/lockrail/lockrail/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/lockrail/lockrail/compare/041225b...v0.3.3

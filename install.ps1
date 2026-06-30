@@ -87,9 +87,21 @@ try {
 }
 
 Write-Step "08" "auto-configuring local firewall"
+$OldLockrailPassword = $env:LOCKRAIL_PASSWORD
+Remove-Item Env:\LOCKRAIL_PASSWORD -ErrorAction SilentlyContinue
 & "$InstallDir\$Binary" setup
+if ($null -eq $OldLockrailPassword) {
+    Remove-Item Env:\LOCKRAIL_PASSWORD -ErrorAction SilentlyContinue
+} else {
+    $env:LOCKRAIL_PASSWORD = $OldLockrailPassword
+}
 if ($LASTEXITCODE -ne 0) {
-    Write-Fail "setup failed; run $InstallDir\$Binary setup for details"
+    Write-Host "Try:" -ForegroundColor Yellow
+    Write-Host "  Remove-Item Env:\LOCKRAIL_PASSWORD -ErrorAction SilentlyContinue"
+    Write-Host "  $InstallDir\$Binary setup"
+    Write-Host "If an older local vault is blocking setup:"
+    Write-Host "  $InstallDir\$Binary setup --reset"
+    Write-Fail "setup failed"
 }
 
 Write-Host ""
@@ -98,4 +110,13 @@ Write-Host "  lockrail demo"
 Write-Host "  lockrail ui"
 Write-Host "  claude   # or codex / cursor / agy if installed"
 Write-Host ""
+
+$ActiveBin = (Get-Command lockrail -ErrorAction SilentlyContinue).Source
+if ($ActiveBin -and ($ActiveBin -ne (Join-Path $InstallDir $Binary))) {
+    Write-Host "[!!] your shell currently resolves lockrail to $ActiveBin" -ForegroundColor Red
+    Write-Host "     Put $InstallDir first on PATH, then verify with:"
+    Write-Host "       Get-Command lockrail"
+    Write-Host ""
+}
+
 Write-Ok "bootstrap complete"

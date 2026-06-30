@@ -243,6 +243,11 @@ enum Commands {
         apply: bool,
         #[arg(
             long,
+            help = "Archive the current local Lockrail state and create a fresh auto-managed setup"
+        )]
+        reset: bool,
+        #[arg(
+            long,
             value_delimiter = ',',
             default_value = "all",
             help = "Comma-separated tools to protect: all, claude, codex, cursor, agy"
@@ -978,6 +983,30 @@ fn ensure_local_vault_key(cli: &Cli) -> Result<SecretString> {
     Ok(SecretString::from(key))
 }
 
+fn archive_lockrail_home(cli: &Cli) -> Result<Option<PathBuf>> {
+    let active_home = home(cli);
+    if !active_home.exists() {
+        return Ok(None);
+    }
+    let parent = active_home
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let base = active_home
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("lockrail");
+    let mut backup = parent.join(format!("{base}.backup.{}", now_unix()));
+    let mut suffix = 0;
+    while backup.exists() {
+        suffix += 1;
+        backup = parent.join(format!("{base}.backup.{}.{}", now_unix(), suffix));
+    }
+    fs::rename(&active_home, &backup)
+        .with_context(|| format!("archive {} to {}", active_home.display(), backup.display()))?;
+    Ok(Some(backup))
+}
+
 fn print_value(cli: &Cli, value: &serde_json::Value) -> Result<()> {
     if cli.quiet && !cli.json {
         return Ok(());
@@ -1535,8 +1564,21 @@ fn setup_tools(tools: &[String]) -> Vec<String> {
     selected
 }
 
-fn setup_apply(cli: &Cli, tools: &[String]) -> Result<serde_json::Value> {
+fn setup_apply(cli: &Cli, tools: &[String], reset: bool) -> Result<serde_json::Value> {
     let selected_tools = setup_tools(tools);
+    let mut recovered_from = if reset {
+        archive_lockrail_home(cli)?
+    } else {
+        None
+    };
+    if recovered_from.is_none()
+        && vault_path(cli).exists()
+        && read_local_vault_key(cli)?.is_none()
+        && cli.password.is_none()
+        && std::env::var("LOCKRAIL_PASSWORD").is_err()
+    {
+        recovered_from = archive_lockrail_home(cli)?;
+    }
     let vault_password = if !vault_path(cli).exists() {
         password_for_init(cli)?
     } else {
@@ -1571,6 +1613,7 @@ fn setup_apply(cli: &Cli, tools: &[String]) -> Result<serde_json::Value> {
             "path": vault_key_path(cli),
             "stored_locally": cli.password.is_none()
         },
+        "recovered_from": recovered_from,
         "profile": profile,
         "agent": agent,
         "tools": selected_tools,
@@ -3139,6 +3182,18 @@ async fn main() {
     if let Err(error) = run(cli).await {
         let safe = redact_for_logs(&format!("{error:#}"));
         eprintln!("{safe}");
+        if error.chain().any(|cause| {
+            matches!(
+                cause.downcast_ref::<VaultError>(),
+                Some(VaultError::WrongPassword)
+            )
+        }) {
+            eprintln!(
+                "Try: unset LOCKRAIL_PASSWORD && lockrail setup\n\
+                 Or reset local Lockrail state: lockrail setup --reset\n\
+                 Reset archives the old ~/.lockrail directory before creating a fresh setup."
+            );
+        }
         std::process::exit(exit_code_for_error(&error));
     }
 }
@@ -3176,13 +3231,20 @@ async fn run(cli: Cli) -> Result<()> {
                 println!("  lockrail status");
             }
         }
-        Commands::Setup { apply: _, tools } => {
-            let result = setup_apply(&cli, tools)?;
+        Commands::Setup {
+            apply: _,
+            reset,
+            tools,
+        } => {
+            let result = setup_apply(&cli, tools, *reset)?;
             if cli.json {
                 print_value(&cli, &result)?;
             } else if !cli.quiet {
                 println!("lockrail//setup complete");
                 println!("------------------------------------------------------------");
+                if let Some(backup) = result["recovered_from"].as_str() {
+                    println!("[reset]    archived previous state at {backup}");
+                }
                 println!("[vault]    encrypted local store ready");
                 if result["credential_mode"] == "generated_local_key" {
                     println!("[key]      generated and stored locally");

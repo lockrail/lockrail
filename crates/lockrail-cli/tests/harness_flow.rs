@@ -125,6 +125,43 @@ fn setup_demo_and_status_work_from_clean_home() {
 }
 
 #[test]
+fn setup_recovers_from_legacy_password_vault_without_env() {
+    let temp_home = tempfile::tempdir().expect("temp home");
+    let home = temp_home.path();
+
+    let legacy = json_output(
+        lockrail_cmd(home, "legacy-password")
+            .args(["setup", "--json"])
+            .output()
+            .expect("legacy setup"),
+    );
+    assert_eq!(legacy["status"], "ready");
+    assert_eq!(legacy["credential_mode"], "user_supplied_password");
+    assert!(!home.join("vault.key").exists());
+    assert!(home.join("vault.lockrail").exists());
+
+    let recovered = json_output(
+        lockrail_cmd_auto(home)
+            .args(["setup", "--json"])
+            .output()
+            .expect("recovered setup"),
+    );
+    assert_eq!(recovered["status"], "ready");
+    assert_eq!(recovered["credential_mode"], "generated_local_key");
+    assert!(recovered["recovered_from"].as_str().is_some());
+    assert!(home.join("vault.key").exists());
+    assert!(home.join("vault.lockrail").exists());
+
+    let demo = json_output(
+        lockrail_cmd_auto(home)
+            .args(["demo", "--json"])
+            .output()
+            .expect("demo"),
+    );
+    assert!(demo.as_array().expect("demo array").len() >= 4);
+}
+
+#[test]
 fn init_protect_demo_status_and_proof_pack_work() {
     let temp_home = tempfile::tempdir().expect("temp home");
     let home = temp_home.path();

@@ -155,7 +155,15 @@ if "${INSTALL_DIR}/${BIN_FILE}" --version >/dev/null 2>&1; then
 fi
 
 step "08" "auto-configuring local firewall"
-PATH="${INSTALL_DIR}:$PATH" "${INSTALL_DIR}/${BIN_FILE}" setup || die "setup failed; run ${INSTALL_DIR}/${BIN_FILE} setup for details"
+(unset LOCKRAIL_PASSWORD; PATH="${INSTALL_DIR}:$PATH" "${INSTALL_DIR}/${BIN_FILE}" setup) || {
+  warn "automatic setup did not finish"
+  say "     Try:"
+  say "       unset LOCKRAIL_PASSWORD"
+  say "       ${INSTALL_DIR}/${BIN_FILE} setup"
+  say "     If an older local vault is blocking setup:"
+  say "       ${INSTALL_DIR}/${BIN_FILE} setup --reset"
+  die "setup failed"
+}
 
 say ""
 say "${C_BOLD}next commands${C_RESET}"
@@ -167,6 +175,16 @@ if [ "$PATH_OK" -eq 0 ]; then
   say ""
   warn "${INSTALL_DIR} is not on PATH"
   say "     export PATH=\"${INSTALL_DIR}:\$PATH\""
+else
+  ACTIVE_BIN="$(command -v lockrail 2>/dev/null || true)"
+  if [ -n "$ACTIVE_BIN" ] && [ "$ACTIVE_BIN" != "${INSTALL_DIR}/${BIN_FILE}" ]; then
+    say ""
+    warn "your shell currently resolves lockrail to ${ACTIVE_BIN}"
+    say "     Use this shell path first:"
+    say "       export PATH=\"${INSTALL_DIR}:\$PATH\""
+    say "     Then verify:"
+    say "       command -v lockrail"
+  fi
 fi
 
 say ""

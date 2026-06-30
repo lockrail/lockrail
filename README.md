@@ -38,8 +38,9 @@ No cloud. No account. Single binary.
 
 ## Install
 
-Fast path: one command downloads Lockrail and auto-configures this machine. No Rust
-toolchain, no Cargo dependency stream, no password prompt, no account.
+Fast path: one command downloads or updates Lockrail and auto-configures this
+machine. No Rust toolchain, no Cargo dependency stream, no password prompt, no
+account.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/lockrail/lockrail/main/install.sh | sh
@@ -63,6 +64,37 @@ Or download a prebuilt binary manually from [Releases](https://github.com/lockra
 **Supported:** macOS (ARM, Intel) · Linux (x86\_64, ARM64) · Windows (x86\_64)
 
 **Not supported yet:** Homebrew. Do not use `brew tap lockrail/tap`; that tap does not exist.
+
+### Update or repair
+
+Run the same installer command again to update:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lockrail/lockrail/main/install.sh | sh
+```
+
+If your shell still runs an older binary after install:
+
+```bash
+command -v lockrail
+export PATH="$HOME/.local/bin:$PATH"
+lockrail --version
+```
+
+If an older password-based local vault blocks setup, reset the local Lockrail
+state. Reset archives the old `~/.lockrail` directory before creating a fresh
+auto-managed setup.
+
+```bash
+lockrail setup --reset
+```
+
+If you previously exported `LOCKRAIL_PASSWORD`, remove it for the new auto mode:
+
+```bash
+unset LOCKRAIL_PASSWORD
+lockrail setup
+```
 
 ## Quickstart
 
