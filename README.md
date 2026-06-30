@@ -82,20 +82,78 @@ lockrail proxy install-ca           # generate local CA + install in system trus
 lockrail proxy start                # start HTTPS intercepting proxy on :8789
 ```
 
-## How it works
+## End-to-end flow
 
-```
-Input path (PTY shim or HTTPS proxy)
-  → secret scanner  (30+ patterns, Shannon entropy)
-  → plaintext sealed → AES-256-GCM vault  →  lockrail://secret/<name>/<fp>
-  → AI tool receives only the opaque handle
+After install, the normal user flow is:
 
-Agent makes an API call
-  → LRAP capability token (Ed25519-signed, time-bound, max-use)
-  → relay checks: host · path · SSRF · replay · usage limits
-  → secret injected at last millisecond — model context never held it
-  → signed receipt written → SHA-256 chained audit event appended
+```bash
+# 1. Install. The installer also runs setup.
+curl -fsSL https://raw.githubusercontent.com/lockrail/lockrail/main/install.sh | sh
+
+# 2. Use your AI tool normally.
+claude
+
+# 3. Paste text, logs, or a .env snippet that contains a secret.
+OPENAI_API_KEY=sk-proj-demo-abcdefghijklmnopqrstuvwxyz123456
 ```
+
+Lockrail sits in front of the AI tool through a local shim. The user keeps using
+`claude`, `codex`, `cursor`, or `agy`; the shim is what receives the terminal
+input first.
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Shim as Lockrail shim
+    participant Scanner as Secret scanner
+    participant Vault as Local encrypted vault
+    participant AI as AI tool / model
+    participant Relay as Lockrail relay
+    participant API as External API
+
+    User->>Shim: Paste prompt, log, or .env text
+    Shim->>Scanner: Scan text before model context
+    Scanner->>Vault: Store raw secret locally if found
+    Vault-->>Scanner: Return opaque handle
+    Scanner-->>Shim: Replace raw secret with lockrail://secret/... handle
+    Shim->>AI: Send safe prompt only
+    AI->>Relay: Request secret use with LRAP capability
+    Relay->>Relay: Verify signature, policy, replay, limits, SSRF rules
+    Relay->>Vault: Resolve secret only after policy passes
+    Relay->>API: Inject raw secret at last moment
+    Relay-->>User: Write signed receipt + audit event
+```
+
+Concrete example:
+
+```text
+User input:
+  OPENAI_API_KEY=sk-proj-demo-abcdefghijklmnopqrstuvwxyz123456
+
+What the AI tool receives:
+  OPENAI_API_KEY=lockrail://secret/openai-key/fp_7c2f...
+
+What stays local:
+  Raw secret encrypted inside ~/.lockrail/vault.lockrail
+  Vault key stored at ~/.lockrail/vault.key with private permissions
+  Tamper-evident audit event in ~/.lockrail/audit.log
+```
+
+What happens internally:
+
+| Step | What Lockrail does | Security control |
+|---|---|---|
+| Install | Downloads the release binary, verifies SHA-256 when available, then runs setup | No Rust toolchain or Cargo dependency stream for normal users |
+| Setup | Generates a random local vault key and local agent identity | `~/.lockrail/vault.key`, private file permissions |
+| Intercept | Shim receives terminal input before the AI tool | Model does not get first look at pasted text |
+| Detect | Scans for 30+ provider formats, private keys, JWTs, and high-entropy strings | Pattern matching + Shannon entropy checks |
+| Seal | Stores the raw secret locally and replaces it with an opaque handle | AES-256-GCM vault encryption, Argon2id key derivation |
+| Use | Agent must request use through the local relay | Ed25519-signed LRAP capability token |
+| Enforce | Relay checks host, path, replay, max-use, and private-network rules | SSRF + DNS rebinding protection, replay store, usage cap |
+| Audit | Writes a receipt for the use event | SHA-256 hash-chained audit log |
+
+The important boundary: the model sees the handle, not the raw secret. The raw
+secret is only resolved later, locally, after policy checks pass.
 
 ## Commands
 
