@@ -46,8 +46,8 @@ impl CaStore {
     }
 
     pub fn load(path: &Path) -> Result<Self> {
-        let bytes = std::fs::read(path)
-            .context("CA store not found — run 'lockrail proxy install-ca'")?;
+        let bytes =
+            std::fs::read(path).context("CA store not found — run 'lockrail proxy install-ca'")?;
         Ok(serde_json::from_slice(&bytes)?)
     }
 
@@ -98,11 +98,10 @@ impl LocalCa {
 
         let leaf_key = KeyPair::generate().context("leaf keygen")?;
         let mut leaf_params = CertificateParams::default();
-        leaf_params.subject_alt_names = vec![SanType::DnsName(
-            hostname
-                .try_into()
-                .map_err(|e| anyhow::anyhow!("invalid hostname {hostname}: {e}"))?,
-        )];
+        leaf_params.subject_alt_names =
+            vec![SanType::DnsName(hostname.try_into().map_err(|e| {
+                anyhow::anyhow!("invalid hostname {hostname}: {e}")
+            })?)];
         let mut dn = DistinguishedName::new();
         dn.push(DnType::CommonName, hostname);
         leaf_params.distinguished_name = dn;
@@ -136,10 +135,7 @@ impl DynamicCertResolver {
 }
 
 impl ResolvesServerCert for DynamicCertResolver {
-    fn resolve(
-        &self,
-        client_hello: rustls::server::ClientHello<'_>,
-    ) -> Option<Arc<CertifiedKey>> {
+    fn resolve(&self, client_hello: rustls::server::ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
         let name = client_hello.server_name()?.to_string();
         {
             let cache = self.cache.lock().ok()?;

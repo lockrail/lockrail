@@ -29,9 +29,9 @@ tracing = { workspace = true }
 http = { workspace = true }
 uuid = { workspace = true }
 fs2 = { workspace = true }
-lockrail-protocol = { version = "0.2.0", path = "../lockrail-protocol" }
-lockrail-vault = { version = "0.2.0", path = "../lockrail-vault" }
-lockrail-audit = { version = "0.2.0", path = "../lockrail-audit" }
+lockrail-protocol = { version = "0.3.0", path = "../lockrail-protocol" }
+lockrail-vault = { version = "0.3.0", path = "../lockrail-vault" }
+lockrail-audit = { version = "0.3.0", path = "../lockrail-audit" }
 
 [dev-dependencies]
 tempfile = { workspace = true }

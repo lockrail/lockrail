@@ -12,8 +12,8 @@ use tokio_rustls::rustls::{ClientConfig, RootCertStore, ServerConfig};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 use tracing::{info, warn};
 
-use lockrail_protocol::seal::{SealOptions, seal_text};
 use super::ca::{DynamicCertResolver, LocalCa};
+use lockrail_protocol::seal::{SealOptions, seal_text};
 
 /// The AI API hostnames whose HTTPS traffic is intercepted and scanned.
 pub const AI_INTERCEPT_HOSTS: &[&str] = &[
@@ -214,8 +214,11 @@ where
             // Scan and seal secrets in the inbound response body.
             let resp_str = String::from_utf8_lossy(&resp_bytes);
             let sealed_resp = seal_text(&resp_str, SealOptions::default());
-            let sealed_resp_count =
-                sealed_resp.findings.iter().filter(|f| f.should_seal).count();
+            let sealed_resp_count = sealed_resp
+                .findings
+                .iter()
+                .filter(|f| f.should_seal)
+                .count();
             if sealed_resp_count > 0 {
                 info!(
                     host = %host,

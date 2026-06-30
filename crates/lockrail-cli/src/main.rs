@@ -29,8 +29,10 @@ use lockrail_protocol::seal::{
     ScanOptions, SealOptions, SecretFinding, redact_for_display, redact_for_logs, scan_text,
     seal_text,
 };
-use lockrail_protocol::{AgentKeypairDoc, CapabilityClaims, CapabilityToken, ProtocolError, now_unix};
-use lockrail_proxy::{CaStore, run_proxy, ProxyConfig, install_ca_system};
+use lockrail_protocol::{
+    AgentKeypairDoc, CapabilityClaims, CapabilityToken, ProtocolError, now_unix,
+};
+use lockrail_proxy::{CaStore, ProxyConfig, install_ca_system, run_proxy};
 use lockrail_relay::{FileReplayStore, FileUsageStore, RelayState, serve};
 use lockrail_vault::{KdfParamsDoc, Vault, VaultError, default_home, default_vault_path};
 
@@ -394,7 +396,9 @@ enum Commands {
         #[command(subcommand)]
         command: SyncCommands,
     },
-    #[command(about = "Local HTTPS proxy — intercepts AI API traffic before secrets reach the model")]
+    #[command(
+        about = "Local HTTPS proxy — intercepts AI API traffic before secrets reach the model"
+    )]
     Proxy {
         #[command(subcommand)]
         command: ProxyCommands,
@@ -437,7 +441,9 @@ enum HookCommands {
         #[arg(long)]
         aggressive: bool,
     },
-    #[command(about = "Block secrets in tool output before Claude incorporates them (PostToolUse hook)")]
+    #[command(
+        about = "Block secrets in tool output before Claude incorporates them (PostToolUse hook)"
+    )]
     PostToolUse {
         #[arg(long, default_value = "hook")]
         prefix: String,
@@ -575,7 +581,9 @@ enum SyncCommands {
 enum ProxyCommands {
     #[command(about = "Generate a local CA and install it in the system trust store")]
     InstallCa,
-    #[command(about = "Start the HTTPS intercepting proxy (configure system HTTPS_PROXY=localhost:8789)")]
+    #[command(
+        about = "Start the HTTPS intercepting proxy (configure system HTTPS_PROXY=localhost:8789)"
+    )]
     Start {
         #[arg(long, default_value = "127.0.0.1:8789", help = "Address to listen on")]
         listen: std::net::SocketAddr,
@@ -2018,8 +2026,7 @@ fn ai_install_hooks(tool: Option<&str>, quiet: bool) -> Result<serde_json::Value
     }
 
     let mut settings: serde_json::Value = if settings_path.exists() {
-        serde_json::from_slice(&fs::read(&settings_path)?)
-            .unwrap_or_else(|_| serde_json::json!({}))
+        serde_json::from_slice(&fs::read(&settings_path)?).unwrap_or_else(|_| serde_json::json!({}))
     } else {
         serde_json::json!({})
     };
@@ -2035,11 +2042,7 @@ fn ai_install_hooks(tool: Option<&str>, quiet: bool) -> Result<serde_json::Value
     }
 
     // Upsert one hook event entry.  Returns true if already present.
-    fn insert_hook(
-        settings: &mut serde_json::Value,
-        event: &str,
-        command: &str,
-    ) -> Result<bool> {
+    fn insert_hook(settings: &mut serde_json::Value, event: &str, command: &str) -> Result<bool> {
         let entry = serde_json::json!({
             "hooks": [{ "type": "command", "command": command }]
         });
@@ -2062,8 +2065,11 @@ fn ai_install_hooks(tool: Option<&str>, quiet: bool) -> Result<serde_json::Value
         Ok(already)
     }
 
-    let ups_already =
-        insert_hook(&mut settings, "UserPromptSubmit", &format!("{exe} hook prompt"))?;
+    let ups_already = insert_hook(
+        &mut settings,
+        "UserPromptSubmit",
+        &format!("{exe} hook prompt"),
+    )?;
     let ptu_already = insert_hook(
         &mut settings,
         "PostToolUse",
@@ -3207,15 +3213,16 @@ async fn run(cli: Cli) -> Result<()> {
                 let input = std::io::read_to_string(std::io::stdin())?;
                 // Claude Code sends JSON: {"tool_name":"...", "tool_input":{...}, "tool_response":{...}}
                 // Extract text content from the tool response to scan.
-                let scan_text_content = if let Ok(json) = serde_json::from_str::<serde_json::Value>(&input) {
-                    json.get("tool_response")
-                        .and_then(|r| r.get("output").or_else(|| r.get("content")))
-                        .and_then(|o| o.as_str())
-                        .map(|s| s.to_string())
-                        .unwrap_or(input)
-                } else {
-                    input
-                };
+                let scan_text_content =
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&input) {
+                        json.get("tool_response")
+                            .and_then(|r| r.get("output").or_else(|| r.get("content")))
+                            .and_then(|o| o.as_str())
+                            .map(|s| s.to_string())
+                            .unwrap_or(input)
+                    } else {
+                        input
+                    };
                 let findings = scan_text(
                     &scan_text_content,
                     ScanOptions {
@@ -3242,7 +3249,10 @@ async fn run(cli: Cli) -> Result<()> {
                         "tool_output",
                         serde_json::json!({"count": sealed_count}),
                     )?;
-                    eprintln!("lockrail: blocked {} secret(s) in tool output", sealed_count);
+                    eprintln!(
+                        "lockrail: blocked {} secret(s) in tool output",
+                        sealed_count
+                    );
                     // Output the safe version and exit 2 to block Claude from seeing raw secrets
                     print!("{}", sealed.safe_text);
                     std::process::exit(2);
@@ -3641,19 +3651,25 @@ async fn run(cli: Cli) -> Result<()> {
                 let cert_path = proxy_cert_path(&cli);
                 let result = install_ca_system(ca_store.cert_pem(), &cert_path);
                 match result {
-                    Ok(msg) => print_value(&cli, &serde_json::json!({
-                        "ok": true,
-                        "message": msg,
-                        "cert_pem_path": cert_path,
-                        "next": "lockrail proxy start",
-                    }))?,
-                    Err(e) => {
-                        print_value(&cli, &serde_json::json!({
-                            "ok": false,
-                            "error": e.to_string(),
-                            "manual_install": format!("sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain {}", cert_path.display()),
+                    Ok(msg) => print_value(
+                        &cli,
+                        &serde_json::json!({
+                            "ok": true,
+                            "message": msg,
                             "cert_pem_path": cert_path,
-                        }))?;
+                            "next": "lockrail proxy start",
+                        }),
+                    )?,
+                    Err(e) => {
+                        print_value(
+                            &cli,
+                            &serde_json::json!({
+                                "ok": false,
+                                "error": e.to_string(),
+                                "manual_install": format!("sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain {}", cert_path.display()),
+                                "cert_pem_path": cert_path,
+                            }),
+                        )?;
                     }
                 }
             }
@@ -3661,32 +3677,39 @@ async fn run(cli: Cli) -> Result<()> {
                 let ca_store = CaStore::load(&ca_path(&cli))
                     .map_err(|_| anyhow!("run 'lockrail proxy install-ca' first"))?;
                 let ca = std::sync::Arc::new(lockrail_proxy::LocalCa::new(ca_store));
-                print_value(&cli, &serde_json::json!({
-                    "status": "starting",
-                    "listen": listen.to_string(),
-                    "intercepting": lockrail_proxy::proxy::AI_INTERCEPT_HOSTS,
-                    "hint": format!("export HTTPS_PROXY=http://{listen}"),
-                }))?;
+                print_value(
+                    &cli,
+                    &serde_json::json!({
+                        "status": "starting",
+                        "listen": listen.to_string(),
+                        "intercepting": lockrail_proxy::proxy::AI_INTERCEPT_HOSTS,
+                        "hint": format!("export HTTPS_PROXY=http://{listen}"),
+                    }),
+                )?;
                 run_proxy(ProxyConfig {
                     listen_addr: *listen,
                     ca,
-                }).await?;
+                })
+                .await?;
             }
             ProxyCommands::Status => {
                 let ca_installed = ca_path(&cli).exists();
                 let cert_exported = proxy_cert_path(&cli).exists();
-                print_value(&cli, &serde_json::json!({
-                    "ca_generated": ca_installed,
-                    "cert_exported": cert_exported,
-                    "ca_path": ca_path(&cli),
-                    "cert_path": proxy_cert_path(&cli),
-                    "intercepting": lockrail_proxy::proxy::AI_INTERCEPT_HOSTS,
-                    "setup_steps": if !ca_installed {
-                        vec!["lockrail proxy install-ca", "export HTTPS_PROXY=http://127.0.0.1:8789", "lockrail proxy start"]
-                    } else {
-                        vec!["export HTTPS_PROXY=http://127.0.0.1:8789", "lockrail proxy start"]
-                    },
-                }))?;
+                print_value(
+                    &cli,
+                    &serde_json::json!({
+                        "ca_generated": ca_installed,
+                        "cert_exported": cert_exported,
+                        "ca_path": ca_path(&cli),
+                        "cert_path": proxy_cert_path(&cli),
+                        "intercepting": lockrail_proxy::proxy::AI_INTERCEPT_HOSTS,
+                        "setup_steps": if !ca_installed {
+                            vec!["lockrail proxy install-ca", "export HTTPS_PROXY=http://127.0.0.1:8789", "lockrail proxy start"]
+                        } else {
+                            vec!["export HTTPS_PROXY=http://127.0.0.1:8789", "lockrail proxy start"]
+                        },
+                    }),
+                )?;
             }
         },
         Commands::Ai { command } => match command {

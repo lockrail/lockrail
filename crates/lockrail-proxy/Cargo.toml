@@ -30,7 +30,7 @@ hyper = { workspace = true }
 hyper-util = { workspace = true }
 http-body-util = { workspace = true }
 webpki-roots = { workspace = true }
-lockrail-protocol = { version = "0.2.0", path = "../lockrail-protocol" }
+lockrail-protocol = { version = "0.3.0", path = "../lockrail-protocol" }
 
 [dev-dependencies]
 tempfile = { workspace = true }

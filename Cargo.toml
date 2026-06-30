@@ -10,14 +10,14 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 authors = ["Het Mehta <hi@hetmehta.com>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/lockrail/lockrail"
 rust-version = "1.96"
-homepage = "https://hetmehta.com/lockrail"
-documentation = "https://docs.rs/lockrail"
+homepage = "https://lockrail.xyz"
+documentation = "https://lockrail.xyz/docs"
 
 [workspace.lints.rust]
 future-incompatible = "warn"

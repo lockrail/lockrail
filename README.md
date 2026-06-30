@@ -1,128 +1,216 @@
-# Lockrail
+<p align="center">
+  <img src="assets/banner.svg" alt="Lockrail" width="600">
+</p>
 
-[![CI](https://github.com/lockrail/lockrail/actions/workflows/ci.yml/badge.svg)](https://github.com/lockrail/lockrail/actions/workflows/ci.yml)
-[![Security](https://github.com/lockrail/lockrail/actions/workflows/security.yml/badge.svg)](https://github.com/lockrail/lockrail/actions/workflows/security.yml)
-[![crates.io](https://img.shields.io/crates/v/lockrail.svg)](https://crates.io/crates/lockrail)
+<p align="center">
+  <a href="https://github.com/lockrail/lockrail/actions/workflows/ci.yml"><img src="https://github.com/lockrail/lockrail/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/lockrail/lockrail/actions/workflows/security.yml"><img src="https://github.com/lockrail/lockrail/actions/workflows/security.yml/badge.svg" alt="Security"></a>
+  <a href="https://crates.io/crates/lockrail"><img src="https://img.shields.io/crates/v/lockrail.svg" alt="crates.io"></a>
+  <a href="https://img.shields.io/crates/d/lockrail"><img src="https://img.shields.io/crates/d/lockrail.svg" alt="Downloads"></a>
+  <img src="https://img.shields.io/badge/rust-1.96%2B-orange.svg" alt="Rust 1.96+">
+  <img src="https://img.shields.io/badge/license-MIT%20%7C%20Apache--2.0-green.svg" alt="License">
+</p>
 
-**Local secret firewall for AI coding tools.**
+<p align="center">
+  <b>AI tools read everything you type. Lockrail stops your secrets from reaching them.</b>
+</p>
 
-AI tools read your .env files, your terminal output, and everything you type. Lockrail intercepts secrets before they reach the model, stores them encrypted locally, and only allows real API use through policy-checked relay calls — with a signed, verifiable audit trail.
+---
+
+Lockrail sits between you and your AI coding tool. Secrets are intercepted before they enter the model's context window, encrypted locally with AES-256-GCM, and replaced with opaque handles. When the agent needs to make an API call, a time-bound signed token is checked against relay policy — the raw secret is injected at the last moment and never stored in any model context.
+
+No cloud. No account. Single binary.
+
+---
+
+## Features
+
+- **Two interception modes** — PTY shim (wraps any CLI tool) or HTTPS proxy (`lockrail proxy`, port 8789)
+- **30+ detection patterns** — OpenAI, Anthropic, AWS, GCP, GitHub, npm, PyPI, HuggingFace, JWT, private keys, high-entropy strings
+- **Opaque handle round-trip** — `lockrail://secret/<name>/<fp>` replaces plaintext; model cannot reconstruct the original
+- **Local encrypted vault** — AES-256-GCM + Argon2id KDF (19,456 KiB, 2 iterations), file perms 0600, atomic writes with fsync
+- **LRAP capability tokens** — Ed25519-signed, time-bound, max-use enforced, replayed tokens rejected
+- **SSRF + DNS rebinding protection** — relay blocks localhost, link-local, metadata endpoints, and rebinding attempts
+- **Hash-chained audit log** — SHA-256 chained events with signed receipts; `lockrail audit verify` detects any tampering
+- **Claude Code hooks** — UserPromptSubmit and PostToolUse hooks block secrets entering and leaving the model
+- **Works offline** — vault, relay, and proxy all run locally; no outbound calls required
+- **Supports** Claude Code · Codex · Cursor · Antigravity · any MCP server
 
 ## Install
 
 ```bash
 cargo install lockrail
-lockrail init
-lockrail protect --tool all
 ```
 
-## Quick demo
+Or download a prebuilt binary for your platform from [Releases](https://github.com/lockrail/lockrail/releases).
+
+**Supported:** macOS (ARM, Intel) · Linux (x86\_64, ARM64) · Windows (x86\_64)
+
+## Quickstart
 
 ```bash
-lockrail demo
-echo 'OPENAI_API_KEY=sk-proj-...' | lockrail seal
+export LOCKRAIL_PASSWORD="$(openssl rand -base64 32)"
+lockrail init --yes
+lockrail ai hooks                   # install Claude Code hooks (UserPromptSubmit + PostToolUse)
+lockrail demo                       # see interception in action
+```
+
+Or use the HTTPS proxy instead of PTY shims:
+
+```bash
+lockrail proxy install-ca           # generate local CA + install in system trust store
+lockrail proxy start                # start HTTPS intercepting proxy on :8789
 ```
 
 ## How it works
 
 ```
-Your terminal input
-  → Lockrail secret scanner (30+ vendor formats + entropy)
-  → Secrets replaced with lockrail://secret/... handles
-  → AI tool receives only safe handles
+Input path (PTY shim or HTTPS proxy)
+  → secret scanner  (30+ patterns, Shannon entropy)
+  → plaintext sealed → AES-256-GCM vault  →  lockrail://secret/<name>/<fp>
+  → AI tool receives only the opaque handle
 
-Agent needs to call an API
-  → Capability token (LRAP): time-bound, signed, max-use enforced
-  → Relay checks policy: host, path, method, SSRF, replay, usage
-  → Secret injected at last moment — model never had it
-  → Signed receipt + chained audit event written
+Agent makes an API call
+  → LRAP capability token (Ed25519-signed, time-bound, max-use)
+  → relay checks: host · path · SSRF · replay · usage limits
+  → secret injected at last millisecond — model context never held it
+  → signed receipt written → SHA-256 chained audit event appended
 ```
 
-## Core commands
+## Commands
+
+<details>
+<summary><b>Setup</b></summary>
+
+| Command | Description |
+|---|---|
+| `lockrail init` | First-time setup — create vault, generate keys |
+| `lockrail protect --tool all` | Install PTY shims for claude, codex, cursor, agy |
+| `lockrail ai hooks` | Install Claude Code UserPromptSubmit + PostToolUse hooks |
+| `lockrail ai enable` | Install Lockrail skill file into Claude/Codex/Cursor config |
+| `lockrail status` | Vault state, installed tools, recent activity |
+| `lockrail doctor` | Diagnose common configuration problems |
+| `lockrail ui` | Open local dashboard (localhost, token-protected) |
+
+</details>
+
+<details>
+<summary><b>Secrets</b></summary>
+
+| Command | Description |
+|---|---|
+| `lockrail secret set <NAME>` | Store a secret (value prompted, never echoed) |
+| `lockrail secret list` | List stored secrets (metadata only — no plaintext) |
+| `lockrail secret delete <NAME>` | Remove a secret from the vault |
+| `lockrail secret import <FILE>` | Bulk import from a `.env` file |
+| `lockrail secret export --format dotenv` | Export to plaintext `.env` — handle with care |
+| `lockrail seal` | Read stdin, seal any secrets found, print safe output |
+| `lockrail scan` | Read stdin, report findings only — nothing is stored |
+| `lockrail pipe` | Filter piped output before pasting into an AI tool |
+
+</details>
+
+<details>
+<summary><b>Relay</b></summary>
+
+| Command | Description |
+|---|---|
+| `lockrail relay start` | Start local HTTP relay |
+| `lockrail relay check` | Ping relay healthz endpoint; exits 1 if unreachable |
+| `lockrail capability issue <NAME>` | Issue a time-bound capability token for a secret |
+| `lockrail capability inspect <TOKEN>` | Decode and display token claims |
+| `lockrail use-key <NAME>` | Resolve a handle to a secret (records last-used timestamp) |
+
+</details>
+
+<details>
+<summary><b>HTTPS Proxy</b></summary>
+
+| Command | Description |
+|---|---|
+| `lockrail proxy install-ca` | Generate local CA cert + install in system trust store |
+| `lockrail proxy start` | Start HTTPS intercepting proxy on port 8789 |
+| `lockrail proxy status` | Check if proxy is running and CA is trusted |
+
+</details>
+
+<details>
+<summary><b>Audit</b></summary>
+
+| Command | Description |
+|---|---|
+| `lockrail audit list` | Show recent audit events |
+| `lockrail audit verify` | Verify the SHA-256 hash chain — detect any tampering |
+| `lockrail proof pack` | Export a signed compliance bundle (zip + manifest) |
+
+</details>
+
+<details>
+<summary><b>Sync</b></summary>
+
+| Command | Description |
+|---|---|
+| `lockrail sync github` | Push secrets to GitHub Actions (X25519 sealed-box) |
+| `lockrail sync vercel` | Sync secrets to Vercel environment variables |
+
+</details>
+
+## Protection surface
+
+| Surface | What Lockrail does |
+|---|---|
+| Terminal stdin | Scanned and sealed before the AI tool sees it |
+| `.env` files | Handle-based sealing — safe for agent inspection |
+| Tool output / responses | PostToolUse hook scans before the model incorporates it |
+| All AI API traffic (proxy mode) | HTTPS intercept — scans every request and response body |
+| Relay calls | LRAP token check · SSRF block · replay detection · usage cap |
+| Audit log | SHA-256 hash chain · signed receipts · tamper detection |
+
+**Not covered:** GUI flows outside the proxy, clipboard capture, keyloggers, or a fully compromised host while the vault is unlocked.
+
+## Comparison
+
+| | Lockrail | ggshield ai-hook | Infisical Agent Vault | Doppler / Phase |
+|---|:---:|:---:|:---:|:---:|
+| Intercepts AI prompt context | ✓ | 4 tools | — | — |
+| HTTPS proxy for all AI traffic | ✓ | — | — | — |
+| Opaque handle round-trip | ✓ | — | — | — |
+| Local vault, no server required | ✓ | — | — | — |
+| No account or cloud dependency | ✓ | — | — | — |
+| SSRF + DNS rebinding protection | ✓ | — | partial | — |
+| Signed audit receipts | ✓ | — | — | — |
+| Post-response secret scanning | ✓ | notify only | — | — |
+| Open source, MIT / Apache-2.0 | ✓ | ✓ | ✓ | ✓ |
+
+## Cryptography
+
+- **Vault:** AES-256-GCM, fresh 96-bit nonce and 128-bit salt per save
+- **KDF:** Argon2id — 19,456 KiB memory, 2 iterations, 1 lane (OWASP recommended)
+- **Capability tokens:** Ed25519 (ed25519-dalek), time-bound, max-use enforced, replay-rejected
+- **Audit chain:** SHA-256 event hashing, each event includes the hash of the previous
+- **Sync encryption:** X25519 sealed-box for GitHub Actions secret push
+- **Proxy TLS:** rcgen-generated local CA; rustls with ring backend
+
+All cryptographic material stays on disk at `~/.lockrail/` with 0600 permissions. No keys leave the machine.
+
+## Building from source
 
 ```bash
-lockrail init                          # First-time setup
-lockrail protect --tool all            # Install shims for claude, codex, cursor, agy
-lockrail demo                          # See interception in action
-lockrail status                        # Vault, tools, recent activity
-lockrail ui                            # Local dashboard (localhost only)
-
-# Secrets
-lockrail seal                          # Seal stdin — outputs safe handles
-lockrail scan                          # Scan stdin — report findings only
-lockrail pipe                          # Filter piped output before paste
-lockrail secret set MY_KEY             # Store a secret (prompted)
-lockrail secret list                   # List stored secrets (metadata only)
-lockrail secret import .env            # Import from .env file
-lockrail secret export --format dotenv # Export to .env (plaintext — handle with care)
-
-# Relay
-lockrail relay start                   # Start local HTTP relay
-lockrail relay check                   # Check if relay is running
-lockrail capability issue MY_KEY       # Issue time-bound capability token
-lockrail capability inspect <token>    # Decode a token
-
-# Proxy (HTTPS interception for all AI tools)
-lockrail proxy install-ca              # Generate CA + install in system trust store
-lockrail proxy start                   # Start HTTPS intercepting proxy
-lockrail proxy status                  # Check proxy is running
-
-# Audit
-lockrail audit verify                  # Verify hash chain — detect tampering
-lockrail audit list                    # Show recent events
-
-# AI tool integration
-lockrail ai enable                     # Install Lockrail skill in Claude/Codex/Cursor
-lockrail ai hooks --tool claude        # Install Claude Code UserPromptSubmit + PostToolUse hooks
+git clone https://github.com/lockrail/lockrail
+cd lockrail
+cargo build --release
+./target/release/lockrail --version
 ```
 
-## What Lockrail protects
+Requires Rust 1.96+. Run `rustup update stable` if needed.
 
-| Surface | Protection |
-|---|---|
-| Terminal stdin | Scanned and sealed before AI tool sees it |
-| .env files | Handle-based sealing — safe for agent inspection |
-| Terminal/command output | Scanned before output returns to model |
-| API responses | Relay scans response bodies for leaked secrets |
-| All AI API traffic (proxy mode) | HTTPS intercept for claude, cursor, codex, browsers |
-| Relay calls | Signed capabilities, replay protection, SSRF blocking |
-| Audit trail | Hash-chained, tamper-evident, signed receipts |
+## Contributing
 
-## What Lockrail does not protect
-
-- GUI or browser flows not going through the proxy
-- Clipboard capture, keyloggers, or malware
-- A fully compromised host while the vault is unlocked
-
-## How it compares
-
-| | Lockrail | Infisical Agent Vault | ggshield ai-hook | Pipelock | Doppler/Phase |
-|---|---|---|---|---|---|
-| Intercepts AI tool prompts | Yes (shim + proxy) | No | 4 tools only | No | No |
-| Opaque handle round-trip | Yes (LRAP) | No | No | No | No |
-| Local / no cloud required | **Yes** | **No** (needs server) | No (cloud API) | Yes | No |
-| No account needed | **Yes** | No | No | Yes | No |
-| SSRF + DNS rebinding protection | Yes | Partial | No | Partial | No |
-| Signed audit receipts | **Yes** | No | No | No | No |
-| Response body scanning | **Yes** | No | No | No | No |
-
-**Infisical Agent Vault** requires PostgreSQL + Redis + a running server (no offline mode — three unresolved GitHub issues confirm this). Lockrail works standalone with a single binary.
-
-**ggshield ai-hook** requires a GitGuardian account and cloud API; blocks pre-prompt for 4 tools only; only notifies (does not block) on post-tool-use secrets.
-
-**Pipelock** scans HTTP traffic at egress but does not intercept what enters the model's context window and has no reversible tokenization.
-
-## Vault security
-
-- AES-256-GCM encryption with Argon2id KDF (OWASP recommended parameters)
-- Per-save fresh nonce and salt
-- File permissions 0o600 on Unix
-- Atomic writes with fsync
-- Agent private keys stored encrypted in vault — never plaintext on disk
+Bug reports, feature requests, and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines and [SECURITY.md](SECURITY.md) for responsible disclosure.
 
 ## Author
 
-Built by [Het Mehta](https://hetmehta.com) — [hi@hetmehta.com](mailto:hi@hetmehta.com) — [@hetmehtaa](https://x.com/hetmehtaa)
+[Het Mehta](https://hetmehta.com) — [hi@hetmehta.com](mailto:hi@hetmehta.com) — [@hetmehtaa](https://x.com/hetmehtaa)
 
 ## License
 
