@@ -1,8 +1,8 @@
 # Contributing to Lockrail
 
-Lockrail is an open-source, local-first Rust security tool. Contributions need
-to preserve that model: no telemetry, no hosted control plane, no licensing
-gates, and no secret exposure in tests, logs, or docs.
+Lockrail is a source-available, local-first Rust security tool. Contributions need
+to preserve that model: no telemetry, no hosted control plane, no runtime license
+checks in the local binary, and no secret exposure in tests, logs, or docs.
 
 ## Development setup
 

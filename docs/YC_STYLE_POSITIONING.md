@@ -14,20 +14,20 @@ AI coding agents can read secrets from prompts, .env files, terminal output, and
 
 ## The gap
 
-No tool simultaneously provides: local + no-account + real-time interception + opaque reversible handles + SSRF egress policy + response scanning + signed audit trail.
+Lockrail combines a rare local-first set of controls: no-account setup, supported-flow interception, opaque reversible handles, relay egress policy, response scanning, and tamper-evident audit.
 
 ## Lockrail's position
 
-The only local-first, zero-dependency secret firewall for AI tools that works completely offline with a single binary. Lockrail intercepts secrets at the terminal level (shim), at the HTTPS transport level (proxy), and at the relay level (LRAP capability protocol) — covering the full path from developer input to AI API response.
+Lockrail is a local-first, zero-dependency secret firewall for supported AI tool flows that works completely offline with a single binary. It can intercept secrets at the terminal level (shim), at the HTTPS transport level (proxy), and at the relay level (LRAP capability protocol), while clearly excluding GUI, clipboard, unsupported host, compressed stream, and compromised-host cases.
 
 ## One-liner
 
-Lockrail stops secrets from entering AI tool context — locally, without a server, with a verifiable audit trail.
+Lockrail keeps secrets out of supported AI tool contexts locally, without a server, with a tamper-evident audit trail.
 
 ## Moat
 
 - LRAP capability protocol: opaque handle round-trip that survives LLM reasoning
-- Signed receipts: the only tool with cryptographic proof of what was intercepted
+- Signed receipts: cryptographic evidence for Lockrail-mediated events
 - Response body scanning: catches secrets leaking back in API responses
 - Post-tool-use blocking: Claude Code hook that blocks secrets in tool output before the model sees them
 - No server dependency: works offline; Infisical's closest equivalent requires a server

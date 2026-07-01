@@ -1361,6 +1361,22 @@ fn terminal_size() -> PtySize {
     }
 }
 
+fn path_command(name: &str) -> Option<PathBuf> {
+    let executable = format!("{name}{}", std::env::consts::EXE_SUFFIX);
+    std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths)
+            .map(|dir| dir.join(&executable))
+            .find(|candidate| candidate.exists() && candidate.is_file())
+    })
+}
+
+fn same_path(left: &Path, right: &Path) -> bool {
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
+}
+
 fn find_real_command(cli: &Cli, name: &str) -> Option<PathBuf> {
     let shim = home(cli).join("bin").join(name);
     std::env::var_os("PATH").and_then(|paths| {
@@ -1952,8 +1968,19 @@ fn store_writable(path: &PathBuf) -> bool {
 
 fn doctor(cli: &Cli) -> serde_json::Value {
     let vault_exists = vault_path(cli).exists();
+    let vault_key_exists = vault_key_path(cli).exists();
+    let legacy_password_vault_without_key = vault_exists
+        && !vault_key_exists
+        && cli.password.is_none()
+        && std::env::var("LOCKRAIL_PASSWORD").is_err();
     let audit_exists = audit_path(cli).exists();
     let config = load_config(cli);
+    let current_exe = std::env::current_exe().ok();
+    let active_lockrail = path_command("lockrail");
+    let active_lockrail_matches_current = match (&active_lockrail, &current_exe) {
+        (Some(active), Some(current)) => same_path(active, current),
+        _ => false,
+    };
     let audit_verify = if audit_exists {
         match AuditLog::new(audit_path(cli)).verify() {
             Ok((ok, message)) => serde_json::json!({"ok": ok, "message": message}),
@@ -1987,15 +2014,34 @@ fn doctor(cli: &Cli) -> serde_json::Value {
                 && config.redirects_disabled
         })
         .unwrap_or(false);
+    let mut fixes = Vec::new();
+    if std::env::var("LOCKRAIL_PASSWORD").is_ok() {
+        fixes.push("unset LOCKRAIL_PASSWORD".to_string());
+    }
+    if legacy_password_vault_without_key {
+        fixes.push("lockrail setup --reset".to_string());
+    }
+    if !path_order_ok {
+        fixes.push(format!("export PATH=\"{}:$PATH\"", shim_dir.display()));
+    }
+    if active_lockrail.is_none() {
+        fixes.push("add the Lockrail install directory to PATH".to_string());
+    } else if !active_lockrail_matches_current {
+        fixes.push("your shell resolves lockrail to a different binary; run `command -v lockrail` and put the intended install directory first on PATH".to_string());
+    }
     let checks = serde_json::json!({
         "home": home(cli),
+        "current_exe": current_exe,
+        "active_lockrail": active_lockrail,
+        "active_lockrail_matches_current": active_lockrail_matches_current,
         "vault_exists": vault_exists,
         "vault_permissions": permissions_mode(&vault_path(cli)).map(|m| format!("{:04o}", m)),
         "vault_permissions_ok": permissions_mode(&vault_path(cli)).map(|mode| mode == 0o600).unwrap_or(vault_exists),
-        "vault_key_exists": vault_key_path(cli).exists(),
+        "vault_key_exists": vault_key_exists,
         "vault_key_permissions": permissions_mode(&vault_key_path(cli)).map(|m| format!("{:04o}", m)),
         "vault_key_permissions_ok": permissions_mode(&vault_key_path(cli)).map(|mode| mode == 0o600).unwrap_or(!vault_key_path(cli).exists()),
         "vault_key_auto_managed": cli.password.is_none() && std::env::var("LOCKRAIL_PASSWORD").is_err(),
+        "legacy_password_vault_without_key": legacy_password_vault_without_key,
         "audit_exists": audit_exists,
         "audit_verify": audit_verify,
         "config_valid": config_valid,
@@ -2007,16 +2053,17 @@ fn doctor(cli: &Cli) -> serde_json::Value {
         "real_codex_found": find_real_command(cli, "codex").is_some(),
         "real_cursor_found": find_real_command(cli, "cursor").is_some(),
         "security_defaults_enabled": security_defaults_enabled,
-        "vault_credential_available": cli.password.is_some() || std::env::var("LOCKRAIL_PASSWORD").is_ok() || vault_key_path(cli).exists(),
+        "vault_credential_available": cli.password.is_some() || std::env::var("LOCKRAIL_PASSWORD").is_ok() || vault_key_exists,
     });
     let overall_ok = vault_exists
+        && !legacy_password_vault_without_key
         && config_valid
         && security_defaults_enabled
         && checks["replay_store_writable"].as_bool().unwrap_or(false)
         && checks["usage_store_writable"].as_bool().unwrap_or(false)
         && checks["path_prepend_ok"].as_bool().unwrap_or(false)
         && checks["audit_verify"]["ok"].as_bool().unwrap_or(false);
-    serde_json::json!({"ok": overall_ok, "checks": checks})
+    serde_json::json!({"ok": overall_ok, "checks": checks, "fixes": fixes})
 }
 
 fn env_scan(_cli: &Cli, path: &Path, aggressive: bool) -> Result<serde_json::Value> {
@@ -3469,7 +3516,66 @@ async fn run(cli: Cli) -> Result<()> {
         },
         Commands::Doctor => {
             let report = doctor(&cli);
-            print_value(&cli, &report)?;
+            if cli.json {
+                print_value(&cli, &report)?;
+            } else if !cli.quiet {
+                println!("lockrail//doctor");
+                println!("------------------------------------------------------------");
+                println!(
+                    "status      {}",
+                    if report["ok"].as_bool().unwrap_or(false) {
+                        "ok"
+                    } else {
+                        "needs attention"
+                    }
+                );
+                println!(
+                    "home        {}",
+                    report["checks"]["home"].as_str().unwrap_or("-")
+                );
+                println!(
+                    "binary      {}",
+                    report["checks"]["active_lockrail"]
+                        .as_str()
+                        .unwrap_or("not on PATH")
+                );
+                println!(
+                    "vault       {}",
+                    if report["checks"]["vault_exists"].as_bool().unwrap_or(false) {
+                        "present"
+                    } else {
+                        "missing"
+                    }
+                );
+                println!(
+                    "vault key   {}",
+                    if report["checks"]["vault_key_exists"]
+                        .as_bool()
+                        .unwrap_or(false)
+                    {
+                        "present"
+                    } else {
+                        "missing"
+                    }
+                );
+                println!(
+                    "audit       {}",
+                    report["checks"]["audit_verify"]["message"]
+                        .as_str()
+                        .unwrap_or("unknown")
+                );
+                if let Some(fixes) = report["fixes"].as_array()
+                    && !fixes.is_empty()
+                {
+                    println!();
+                    println!("fix");
+                    for fix in fixes {
+                        if let Some(fix) = fix.as_str() {
+                            println!("  {fix}");
+                        }
+                    }
+                }
+            }
             if !report["ok"].as_bool().unwrap_or(false) {
                 std::process::exit(1);
             }

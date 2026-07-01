@@ -12,7 +12,7 @@ documentation.workspace = true
 readme = "README.md"
 keywords = ["security", "proxy", "tls", "ai", "secrets"]
 categories = ["network-programming", "security"]
-include = ["src/**", "Cargo.toml", "README.md", "LICENSE-MIT", "LICENSE-APACHE"]
+include = ["src/**", "Cargo.toml", "README.md"]
 
 [lints]
 workspace = true
@@ -30,7 +30,7 @@ hyper = { workspace = true }
 hyper-util = { workspace = true }
 http-body-util = { workspace = true }
 webpki-roots = { workspace = true }
-lockrail-protocol = { version = "0.3.6", path = "../lockrail-protocol" }
+lockrail-protocol = { version = "0.3.7", path = "../lockrail-protocol" }
 
 [dev-dependencies]
 tempfile = { workspace = true }

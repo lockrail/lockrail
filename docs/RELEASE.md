@@ -1,6 +1,6 @@
 # Lockrail Release Process
 
-Lockrail is an open-source local-first security tool. A release is only ready
+Lockrail is a source-available local-first security tool. A release is only ready
 when the documented checks pass and the published limitations remain accurate.
 
 ## Required checks

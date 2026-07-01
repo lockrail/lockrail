@@ -38,7 +38,7 @@ AI tool sees handles, not raw secrets
 The target daily UX is:
 
 ```bash
-LOCKRAIL_PASSWORD='long-local-password' lockrail setup --apply
+curl -fsSL https://raw.githubusercontent.com/lockrail/lockrail/main/install.sh | sh
 ```
 
 After setup, open a new terminal and use tools normally:
@@ -126,7 +126,6 @@ export LOCKRAIL_HOME=/custom/path
 The vault password is provided through:
 
 ```bash
-export LOCKRAIL_PASSWORD='long-local-password'
 ```
 
 ## Secret sealing flow
@@ -186,7 +185,7 @@ The agent/model receives a safe handle:
 lockrail://secret/openai-key/fp_a1b2c3d4e5f6a7b8
 ```
 
-The raw key never appears in the model context.
+On intercepted flows, the raw key is replaced before it reaches the model context.
 
 ## CLI examples
 
@@ -233,7 +232,7 @@ printf 'vendor-token' | lockrail protect generic --secret - --host api.vendor.co
 After:
 
 ```bash
-lockrail setup --apply
+lockrail setup
 ```
 
 Run:
@@ -575,7 +574,7 @@ printf 'token' | lockrail protect generic --secret - --host api.vendor.com --age
 Command:
 
 ```bash
-LOCKRAIL_PASSWORD='long-local-password' lockrail setup --apply
+curl -fsSL https://raw.githubusercontent.com/lockrail/lockrail/main/install.sh | sh
 ```
 
 Does:
@@ -659,8 +658,7 @@ Use this short version:
 ## Recommended demo
 
 ```bash
-export LOCKRAIL_PASSWORD='demo-password'
-lockrail setup --apply
+lockrail setup
 
 echo 'Use sk-proj-abcdefghijklmnopqrstuvwxyz123456' | lockrail seal --json
 

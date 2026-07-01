@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-07-01
+
+### Changed
+- License changed from MIT/Apache-2.0 to PolyForm Noncommercial 1.0.0 with commercial, SaaS, managed-service, resale, and competing-product use requiring a separate written commercial license.
+- README, release notes, architecture docs, and positioning docs now describe Lockrail as source-available and scope protection to supported intercepted flows.
+- `lockrail doctor` now prints human-readable recovery output by default, with JSON still available through `--json`.
+- `lockrail doctor` now detects stale `LOCKRAIL_PASSWORD`, legacy password vaults without generated vault keys, PATH/shim ordering problems, and active-binary mismatches.
+- GitHub release notes no longer advertise Homebrew or the old `init` / `protect` setup flow.
+
 ## [0.3.6] - 2026-07-01
 
 ### Changed
@@ -90,7 +99,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial local vault and secret scanning prototype
 
-[Unreleased]: https://github.com/lockrail/lockrail/compare/v0.3.6...HEAD
+[Unreleased]: https://github.com/lockrail/lockrail/compare/v0.3.7...HEAD
+[0.3.7]: https://github.com/lockrail/lockrail/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/lockrail/lockrail/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/lockrail/lockrail/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/lockrail/lockrail/compare/v0.3.3...v0.3.4

@@ -120,14 +120,10 @@ jobs:
             irm https://raw.githubusercontent.com/lockrail/lockrail/main/install.ps1 | iex
             ```
 
-            **Homebrew (macOS/Linux):**
-            ```bash
-            brew install lockrail/tap/lockrail
-            ```
-
             **If you already have Rust:**
             ```bash
             cargo install lockrail
+            lockrail setup
             ```
 
             **Direct download:**
@@ -143,8 +139,8 @@ jobs:
 
             **Quick start after installing:**
             ```bash
-            lockrail init
-            lockrail protect --tool all
             lockrail demo
             lockrail ui   # dashboard at http://127.0.0.1:8790
             ```
+
+            Homebrew is not supported yet. Do not use `brew tap lockrail/tap`.

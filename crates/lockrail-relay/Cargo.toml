@@ -12,7 +12,7 @@ documentation.workspace = true
 readme = "README.md"
 keywords = ["security", "relay", "ssrf", "ai"]
 categories = ["security", "network-programming"]
-include = ["src/**", "Cargo.toml", "README.md", "LICENSE-MIT", "LICENSE-APACHE"]
+include = ["src/**", "Cargo.toml", "README.md"]
 
 [lints]
 workspace = true
@@ -26,9 +26,9 @@ axum = { workspace = true }
 reqwest = { workspace = true }
 tracing = { workspace = true }
 fs2 = { workspace = true }
-lockrail-protocol = { version = "0.3.6", path = "../lockrail-protocol" }
-lockrail-vault = { version = "0.3.6", path = "../lockrail-vault" }
-lockrail-audit = { version = "0.3.6", path = "../lockrail-audit" }
+lockrail-protocol = { version = "0.3.7", path = "../lockrail-protocol" }
+lockrail-vault = { version = "0.3.7", path = "../lockrail-vault" }
+lockrail-audit = { version = "0.3.7", path = "../lockrail-audit" }
 
 [dev-dependencies]
 tempfile = { workspace = true }

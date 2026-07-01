@@ -8,18 +8,22 @@
   <a href="https://crates.io/crates/lockrail"><img src="https://img.shields.io/crates/v/lockrail.svg" alt="crates.io"></a>
   <a href="https://img.shields.io/crates/d/lockrail"><img src="https://img.shields.io/crates/d/lockrail.svg" alt="Downloads"></a>
   <img src="https://img.shields.io/badge/rust-1.96%2B-orange.svg" alt="Rust 1.96+">
-  <img src="https://img.shields.io/badge/license-MIT%20%7C%20Apache--2.0-green.svg" alt="License">
+  <img src="https://img.shields.io/badge/license-source--available%20noncommercial-blue.svg" alt="License">
 </p>
 
 <p align="center">
-  <b>AI tools read everything you type. Lockrail stops your secrets from reaching them.</b>
+  <b>AI tools read everything you type. Lockrail keeps secrets out of supported intercepted AI flows.</b>
 </p>
 
 ---
 
-Lockrail sits between you and your AI coding tool. Secrets are intercepted before they enter the model's context window, encrypted locally with AES-256-GCM, and replaced with opaque handles. When the agent needs to make an API call, a time-bound signed token is checked against relay policy — the raw secret is injected at the last moment and never stored in any model context.
+Lockrail sits between you and supported AI coding tool flows. On intercepted
+paths, secrets are caught before they enter the model's context window,
+encrypted locally with AES-256-GCM, and replaced with opaque handles. When the
+agent needs to make an API call, a time-bound signed token is checked against
+relay policy, and the raw secret is injected at the last moment.
 
-No cloud. No account. Single binary.
+No cloud. No account. Single binary. Source-available for noncommercial use.
 
 ---
 
@@ -35,6 +39,7 @@ No cloud. No account. Single binary.
 - **Claude Code hooks** — UserPromptSubmit and PostToolUse hooks block secrets entering and leaving the model
 - **Works offline** — vault, relay, and proxy all run locally; no Lockrail cloud required
 - **Supports** Claude Code · Codex · Cursor · Antigravity · any MCP server
+- **Source-available license** — noncommercial use is allowed; commercial, SaaS, managed service, resale, or competing product use requires a written commercial license
 
 ## Install
 
@@ -185,7 +190,8 @@ What happens internally:
 | Audit | Writes a receipt for the use event | SHA-256 hash-chained audit log |
 
 The important boundary: the model sees the handle, not the raw secret. The raw
-secret is only resolved later, locally, after policy checks pass.
+secret is only resolved later, locally, after policy checks pass. This guarantee
+only applies to traffic Lockrail actually intercepts.
 
 ## Commands
 
@@ -289,7 +295,6 @@ secret is only resolved later, locally, after policy checks pass.
 | SSRF + DNS rebinding protection | ✓ | — | partial | — |
 | Signed audit receipts | ✓ | — | — | — |
 | Post-response secret scanning | ✓ | notify only | — | — |
-| Open source, MIT / Apache-2.0 | ✓ | ✓ | ✓ | ✓ |
 
 ## Cryptography
 
@@ -323,4 +328,13 @@ Bug reports, feature requests, and pull requests are welcome. See [CONTRIBUTING.
 
 ## License
 
-MIT OR Apache-2.0
+Lockrail is source-available under the
+[PolyForm Noncommercial License 1.0.0](LICENSE). See
+[docs/LICENSING.md](docs/LICENSING.md) for the commercial-use summary.
+
+Commercial use, production use by a commercial organization, resale,
+managed-service use, hosted/SaaS use, embedding Lockrail in a commercial
+product, or building a competing product or service from Lockrail requires a
+separate written commercial license from Het Mehta.
+
+Contact: [hi@hetmehta.com](mailto:hi@hetmehta.com).

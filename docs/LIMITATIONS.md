@@ -24,9 +24,9 @@ The relay blocks obvious SSRF targets and rejects unsafe URL forms by default, b
 
 This repository now has a significantly harder security-critical path, but it should not be called production-ready just because local tests pass. It still needs broader adversarial testing, dependency security tooling, and tighter integration coverage.
 
-## Open-source release boundary
+## Source-available license boundary
 
-Lockrail is open source only. This repo does not add accounts, hosted control
-planes, paid tiers, telemetry, or enterprise-only execution paths. If those
+Lockrail is source-available for noncommercial use. This repo does not add accounts, hosted control
+planes, paid tiers, commercial SaaS licensing, telemetry, or enterprise-only execution paths. If those
 appear later, they should be treated as a product-scope change rather than an
 incidental implementation detail.
