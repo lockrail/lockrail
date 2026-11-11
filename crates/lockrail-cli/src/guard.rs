@@ -1034,8 +1034,10 @@ mod tests {
         let cmd = format!("cd a && cd b && cd c && cd d && cat <<'EOF' > out.txt\n{body}\nEOF");
         let started = std::time::Instant::now();
         assert_eq!(bash_violation(&cmd, &ctx(&f)), None);
+        // The bug took 27.9 s; 10 s still catches it and leaves room for an unoptimized build on a
+        // shared CI runner (2.3 s there).
         assert!(
-            started.elapsed().as_secs_f64() < 2.0,
+            started.elapsed().as_secs_f64() < 10.0,
             "took {:?}",
             started.elapsed()
         );
