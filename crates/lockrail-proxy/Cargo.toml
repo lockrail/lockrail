@@ -18,6 +18,7 @@ include = ["src/**", "Cargo.toml", "README.md"]
 workspace = true
 
 [dependencies]
+time = { workspace = true }
 anyhow = { workspace = true }
 dirs = { workspace = true }
 tokio = { workspace = true }
@@ -30,7 +31,16 @@ hyper = { workspace = true }
 hyper-util = { workspace = true }
 http-body-util = { workspace = true }
 webpki-roots = { workspace = true }
-lockrail-protocol = { version = "0.3.7", path = "../lockrail-protocol" }
+lockrail-protocol = { version = "0.4.0", path = "../lockrail-protocol" }
+lockrail-engine = { version = "0.4.0", path = "../lockrail-engine" }
+sha2 = { workspace = true }
+flate2 = "1"
+brotli-decompressor = "5"
+ruzstd = "0.9.1"
+rustls-platform-verifier = "0.6"
+libc = "0.2"
 
 [dev-dependencies]
+base64ct = { workspace = true }
+brotli = "8"
 tempfile = { workspace = true }

@@ -1,0 +1,222 @@
+$ lockrail setup --tools all --json
+exit=0
+{
+  "agent": {
+    "agent_id": "<B64>",
+    "created_at": <EPOCH>,
+    "kind": "local-cli",
+    "name": "default-local-agent",
+    "public_key": "<B64>",
+    "revoked": false,
+    "updated_at": <EPOCH>,
+    "version": 1
+  },
+  "credential_mode": "generated_local_key",
+  "doctor": {
+    "checks": {
+      "active_lockrail": null,
+      "active_lockrail_matches_current": false,
+      "audit_exists": true,
+      "audit_verify": {
+        "message": "ok: 1 events",
+        "ok": true
+      },
+      "config_valid": true,
+      "current_exe": "<BIN>",
+      "home": "<WORK>/home-01-setup/.lockrail",
+      "legacy_password_vault_without_key": false,
+      "path_prepend_ok": false,
+      "real_claude_found": true,
+      "real_codex_found": true,
+      "real_cursor_found": true,
+      "replay_store_writable": true,
+      "security_defaults_enabled": true,
+      "shims_installed": {
+        "agy": true,
+        "claude": true,
+        "codex": true,
+        "cursor": true
+      },
+      "usage_store_writable": true,
+      "vault_credential_available": true,
+      "vault_exists": true,
+      "vault_key_auto_managed": true,
+      "vault_key_exists": true,
+      "vault_key_permissions": "0600",
+      "vault_key_permissions_ok": true,
+      "vault_permissions": "0600",
+      "vault_permissions_ok": true
+    },
+    "fixes": [
+      "export PATH=\"<WORK>/home-01-setup/.lockrail/bin:$PATH\"",
+      "add the Lockrail install directory to PATH"
+    ],
+    "ok": false
+  },
+  "next": [
+    "open a new terminal if PATH changed",
+    "lockrail demo",
+    "lockrail doctor",
+    "claude",
+    "codex",
+    "cursor",
+    "agy"
+  ],
+  "profile": {
+    "created_at": <EPOCH>,
+    "name": "local-user"
+  },
+  "recovered_from": null,
+  "shims": {
+    "installed": [
+      "<WORK>/home-01-setup/.lockrail/bin/agy",
+      "<WORK>/home-01-setup/.lockrail/bin/claude",
+      "<WORK>/home-01-setup/.lockrail/bin/codex",
+      "<WORK>/home-01-setup/.lockrail/bin/cursor"
+    ],
+    "path_prepend": "export PATH=\"<WORK>/home-01-setup/.lockrail/bin:$PATH\""
+  },
+  "status": "ready",
+  "tools": [
+    "agy",
+    "claude",
+    "codex",
+    "cursor"
+  ],
+  "vault_key": {
+    "path": "<WORK>/home-01-setup/.lockrail/vault.key",
+    "stored_locally": true
+  }
+}
+
+$ lockrail status --json
+exit=0
+{
+  "audit_ok": true,
+  "private_network_blocking_enabled": true,
+  "protected_tools": {
+    "agy": "Warn: shim installed but real binary not found on PATH",
+    "claude": "Pass: shim active; real binary at /Users/het/.local/bin/claude",
+    "codex": "Pass: shim active; real binary at /Users/het/.local/bin/codex",
+    "cursor": "Pass: shim active; real binary at /opt/homebrew/bin/cursor",
+    "mcp": "Unknown: binary not found"
+  },
+  "receipts_enabled": true,
+  "recent_activity": [
+    "0 secrets sealed today",
+    "0 relay requests allowed",
+    "0 relay requests denied"
+  ],
+  "replay_writable": true,
+  "vault_encrypted": true,
+  "vault_permissions_ok": true,
+  "vault_unlocked": true
+}
+
+# files under HOME after setup
+./.lockrail/agents/<B64>.agent.json
+./.lockrail/audit.jsonl
+./.lockrail/audit.lock
+./.lockrail/bin/agy
+./.lockrail/bin/claude
+./.lockrail/bin/codex
+./.lockrail/bin/cursor
+./.lockrail/config.json
+./.lockrail/profile.json
+./.lockrail/replay-cache.json
+./.lockrail/usage-store.json
+./.lockrail/vault.key
+./.lockrail/vault.lock
+./.lockrail/vault.lockrail
+
+$ lockrail setup --json (second run is idempotent)
+exit=0
+{
+  "agent": {
+    "agent_id": "<B64>",
+    "created_at": <EPOCH>,
+    "kind": "local-cli",
+    "name": "default-local-agent",
+    "public_key": "<B64>",
+    "revoked": false,
+    "updated_at": <EPOCH>,
+    "version": 1
+  },
+  "credential_mode": "generated_local_key",
+  "doctor": {
+    "checks": {
+      "active_lockrail": null,
+      "active_lockrail_matches_current": false,
+      "audit_exists": true,
+      "audit_verify": {
+        "message": "ok: 1 events",
+        "ok": true
+      },
+      "config_valid": true,
+      "current_exe": "<BIN>",
+      "home": "<WORK>/home-01-setup/.lockrail",
+      "legacy_password_vault_without_key": false,
+      "path_prepend_ok": false,
+      "real_claude_found": true,
+      "real_codex_found": true,
+      "real_cursor_found": true,
+      "replay_store_writable": true,
+      "security_defaults_enabled": true,
+      "shims_installed": {
+        "agy": true,
+        "claude": true,
+        "codex": true,
+        "cursor": true
+      },
+      "usage_store_writable": true,
+      "vault_credential_available": true,
+      "vault_exists": true,
+      "vault_key_auto_managed": true,
+      "vault_key_exists": true,
+      "vault_key_permissions": "0600",
+      "vault_key_permissions_ok": true,
+      "vault_permissions": "0600",
+      "vault_permissions_ok": true
+    },
+    "fixes": [
+      "export PATH=\"<WORK>/home-01-setup/.lockrail/bin:$PATH\"",
+      "add the Lockrail install directory to PATH"
+    ],
+    "ok": false
+  },
+  "next": [
+    "open a new terminal if PATH changed",
+    "lockrail demo",
+    "lockrail doctor",
+    "claude",
+    "codex",
+    "cursor",
+    "agy"
+  ],
+  "profile": {
+    "created_at": <EPOCH>,
+    "name": "local-user"
+  },
+  "recovered_from": null,
+  "shims": {
+    "installed": [
+      "<WORK>/home-01-setup/.lockrail/bin/agy",
+      "<WORK>/home-01-setup/.lockrail/bin/claude",
+      "<WORK>/home-01-setup/.lockrail/bin/codex",
+      "<WORK>/home-01-setup/.lockrail/bin/cursor"
+    ],
+    "path_prepend": "export PATH=\"<WORK>/home-01-setup/.lockrail/bin:$PATH\""
+  },
+  "status": "ready",
+  "tools": [
+    "agy",
+    "claude",
+    "codex",
+    "cursor"
+  ],
+  "vault_key": {
+    "path": "<WORK>/home-01-setup/.lockrail/vault.key",
+    "stored_locally": true
+  }
+}
+

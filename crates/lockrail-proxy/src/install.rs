@@ -29,13 +29,17 @@ pub fn install_ca_system(cert_pem: &str, cert_path: &Path) -> Result<String> {
 
 #[cfg(target_os = "macos")]
 fn install_ca_macos(cert_path: &Path) -> Result<String> {
-    // Prefer the user keychain (no sudo needed) then fall back to system keychain.
+    // Prefer the user trust domain (no admin needed: one login-password prompt), then fall back to
+    // the admin store. `-d` selects the admin store (`security add-trusted-cert -h`: "Add to admin
+    // cert store; default is user"), so the user attempt must not pass it; 0.3.7 did, which made
+    // this step need admin rights. `-p ssl` limits the trust to TLS server certificates.
     let user_result = std::process::Command::new("security")
         .args([
             "add-trusted-cert",
-            "-d",
             "-r",
             "trustRoot",
+            "-p",
+            "ssl",
             "-k",
             &format!(
                 "{}/Library/Keychains/login.keychain-db",
@@ -62,6 +66,8 @@ fn install_ca_macos(cert_path: &Path) -> Result<String> {
             "-d",
             "-r",
             "trustRoot",
+            "-p",
+            "ssl",
             "-k",
             "/Library/Keychains/System.keychain",
             &cert_path.to_string_lossy(),
@@ -209,4 +215,56 @@ fn install_ca_windows(cert_path: &Path) -> Result<String> {
         certutil -addstore Root \"{}\"",
         cert_path.display()
     ))
+}
+
+/// D5: remove the Lockrail CA from the trust store the installer used and report what was done.
+/// The caller deletes the local CA files. System-keychain removal needs `sudo`, so it is printed
+/// as a command rather than run.
+pub fn uninstall_ca_system(cert_path: &Path) -> Result<String> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut done = Vec::new();
+        if cert_path.exists() {
+            let trust = std::process::Command::new("security")
+                .args(["remove-trusted-cert", "-d"])
+                .arg(cert_path)
+                .status();
+            done.push(format!(
+                "trust settings: {}",
+                if matches!(trust, Ok(s) if s.success()) {
+                    "removed"
+                } else {
+                    "not present"
+                }
+            ));
+        }
+        let keychain = format!(
+            "{}/Library/Keychains/login.keychain-db",
+            dirs::home_dir()
+                .map(|h| h.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        );
+        let delete = std::process::Command::new("security")
+            .args(["delete-certificate", "-c", "Lockrail Local CA", &keychain])
+            .status();
+        done.push(format!(
+            "login keychain certificate: {}",
+            if matches!(delete, Ok(s) if s.success()) {
+                "deleted"
+            } else {
+                "not present"
+            }
+        ));
+        done.push(
+            "system keychain (if it was installed there): sudo security delete-certificate -c \"Lockrail Local CA\" /Library/Keychains/System.keychain".to_string(),
+        );
+        Ok(done.join("; "))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(format!(
+            "remove {} from your system trust store manually",
+            cert_path.display()
+        ))
+    }
 }

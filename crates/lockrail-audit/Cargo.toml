@@ -25,6 +25,9 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 time = { workspace = true }
 fs2 = { workspace = true }
+hmac = { workspace = true }
+ed25519-dalek = { workspace = true }
+base64ct = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

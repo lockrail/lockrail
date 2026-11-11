@@ -1,4 +1,12 @@
+mod governance;
+mod guard;
+mod hooks;
 mod inject;
+mod installer;
+mod ledger;
+mod managed;
+mod proxy_check;
+mod sweep;
 mod sync;
 
 use anyhow::{Context, Result, anyhow};
@@ -27,12 +35,13 @@ use lockrail_audit::AuditLog;
 use lockrail_protocol::presets::{InjectionMethod, PRESETS, default_path_rules, preset};
 use lockrail_protocol::seal::{
     ScanOptions, SealOptions, SecretFinding, redact_for_display, redact_for_logs, scan_text,
-    seal_text,
 };
 use lockrail_protocol::{
     AgentKeypairDoc, CapabilityClaims, CapabilityToken, ProtocolError, now_unix,
 };
-use lockrail_proxy::{CaStore, ProxyConfig, SecretSink, install_ca_system, run_proxy};
+use lockrail_proxy::{
+    CaStore, ProxyConfig, SecretSink, install_ca_system, run_proxy, uninstall_ca_system,
+};
 use lockrail_relay::{FileReplayStore, FileUsageStore, RelayState, serve};
 use lockrail_vault::{KdfParamsDoc, Vault, VaultError, default_home, default_vault_path};
 
@@ -268,8 +277,48 @@ enum Commands {
     },
     #[command(about = "Run an offline demo — shows secrets being intercepted and replaced")]
     Demo,
+    #[command(
+        about = "Set up agent protection for this user in one step: background sealer, local CA (one password prompt), Claude Code hooks and proxy"
+    )]
+    Install {
+        #[arg(
+            long,
+            help = "Skip trusting the local CA (no password prompt; the sealer cannot open TLS until trusted)"
+        )]
+        no_trust: bool,
+        #[arg(long, help = "Print what would change without changing anything")]
+        dry_run: bool,
+    },
+    #[command(about = "Remove everything `lockrail install` set up, restoring previous settings")]
+    Uninstall {
+        #[arg(
+            long,
+            help = "Required: remove the helper, LaunchAgent, CA trust, hooks and proxy settings"
+        )]
+        all: bool,
+        #[arg(long, help = "Also delete the vault and audit log (cannot be undone)")]
+        purge_data: bool,
+    },
+    #[command(about = "Check that agent protection is in place, with the fix for anything missing")]
+    Protection,
     #[command(about = "Show vault status, protected tools, and recent activity")]
     Status,
+    #[command(
+        about = "Credential exposure ledger: what was stopped, by which tool, and what leaked before Lockrail"
+    )]
+    Ledger,
+    #[command(
+        about = "Find secrets and PHI already in AI-tool transcripts (read-only; reports handles, never values)"
+    )]
+    Sweep {
+        #[arg(
+            long = "path",
+            help = "File or directory to scan (default: ~/.claude/projects and ~/.codex/sessions)"
+        )]
+        paths: Vec<PathBuf>,
+        #[arg(long, help = "Secrets only; skip PHI detection")]
+        no_phi: bool,
+    },
     #[command(about = "Open the local dashboard in your browser (token-protected, localhost only)")]
     Ui {
         #[arg(long, help = "Address to listen on (default: 127.0.0.1:8790)")]
@@ -383,6 +432,36 @@ enum Commands {
         #[command(subcommand)]
         command: AuditCommands,
     },
+    #[command(about = "Key custody: which store holds Lockrail's keys, migration and rollback")]
+    Keys {
+        #[command(subcommand)]
+        command: governance::KeysCommands,
+    },
+    #[command(about = "Signed org policy: keygen, sign, verify, and show the effective policy")]
+    Policy {
+        #[command(subcommand)]
+        command: governance::PolicyCommands,
+    },
+    #[command(about = "Verify the keyed v2 event chain")]
+    Events {
+        #[command(subcommand)]
+        command: governance::EventsCommands,
+    },
+    #[command(about = "Evidence: anchors, digests, shipping to sinks, and verification")]
+    Evidence {
+        #[command(subcommand)]
+        command: governance::EvidenceCommands,
+    },
+    #[command(about = "The sealing proxy: model-host MITM that seals secrets and withholds PHI")]
+    Sealer {
+        #[command(subcommand)]
+        command: governance::SealerCommands,
+    },
+    #[command(about = "Presence and command grants: run, inspect or revoke the per-user broker")]
+    Broker {
+        #[command(subcommand)]
+        command: governance::BrokerCommands,
+    },
     #[command(about = "Print, validate, or reset configuration")]
     Config {
         #[command(subcommand)]
@@ -442,11 +521,48 @@ enum AiCommands {
         #[arg(long, help = "Target tool (currently: claude)")]
         tool: Option<String>,
     },
+    #[command(
+        about = "Print the Claude Code managed-settings.json payload for MDM (does not install it)"
+    )]
+    ManagedSettings {
+        #[arg(
+            long,
+            help = "Absolute path where MDM installs the lockrail binary on employee Macs (required; never a build path)"
+        )]
+        binary: String,
+        #[arg(long, help = "Claude organization UUID for forceLoginOrgUUID")]
+        org_uuid: Option<String>,
+        #[arg(
+            long,
+            help = "Route @ mentions through file tools (changes how @ works)"
+        )]
+        disable_file_mentions: bool,
+        #[arg(long, help = "Block every non-managed hook (user, project, plugin)")]
+        managed_hooks_only: bool,
+        #[arg(
+            long,
+            help = "Add the HIPAA sample settings: Anthropic-only provider, claude.ai login, transcript retention"
+        )]
+        hipaa: bool,
+        #[arg(
+            long,
+            help = "Turn on Claude Code's own sandbox for shell commands (filesystem and egress limits, no unsandboxed fallback)"
+        )]
+        claude_sandbox: bool,
+        #[arg(
+            long,
+            default_value_t = 30,
+            help = "Transcript retention in days (with --hipaa)"
+        )]
+        cleanup_days: u32,
+    },
 }
 
 #[derive(Subcommand)]
 enum HookCommands {
-    #[command(about = "Seal secrets in a prompt before Claude sees it (UserPromptSubmit hook)")]
+    #[command(
+        about = "Check a prompt before Claude sees it: block secrets (unless the sealer is active) and PHI without a BAA (UserPromptSubmit hook)"
+    )]
     Prompt {
         #[arg(long, default_value = "hook")]
         prefix: String,
@@ -462,6 +578,10 @@ enum HookCommands {
         #[arg(long)]
         aggressive: bool,
     },
+    #[command(
+        about = "Guard tool calls: refuse reads of Lockrail state and unresolvable handles (PreToolUse hook)"
+    )]
+    PreToolUse,
 }
 
 #[derive(Subcommand)]
@@ -593,6 +713,8 @@ enum SyncCommands {
 enum ProxyCommands {
     #[command(about = "Generate a local CA and install it in the system trust store")]
     InstallCa,
+    #[command(about = "Remove the Lockrail CA from the trust store and delete its key (D5)")]
+    UninstallCa,
     #[command(
         about = "Start the HTTPS intercepting proxy (configure system HTTPS_PROXY=localhost:8789)"
     )]
@@ -696,6 +818,27 @@ enum RelayCommands {
     },
     #[command(about = "Check whether the relay is running and reachable")]
     Check,
+    #[command(
+        about = "Send a request through the relay with a signed agent proof (D11)",
+        long_about = "Builds the LRAP access proof for an agent-bound capability (method, URL, body hash,\n\
+                      task and purpose from the capability) with the agent's key, and sends it to\n\
+                      the running relay. The response never contains the secret."
+    )]
+    Call {
+        #[arg(long, help = "Agent name the capability is bound to")]
+        agent: String,
+        #[arg(
+            long,
+            help = "The lrap capability token (or @path to read it from a file)"
+        )]
+        capability: String,
+        #[arg(long, default_value = "POST")]
+        method: String,
+        #[arg(long, help = "Upstream URL")]
+        url: String,
+        #[arg(long, help = "JSON request body")]
+        body: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -784,6 +927,14 @@ enum ProofCommands {
         #[arg(long)]
         markdown: bool,
     },
+    #[command(about = "Verify a proof pack's device signature (D17)")]
+    Verify {
+        #[arg(default_value = "lockrail-proof-pack.json")]
+        pack: PathBuf,
+        /// Base64 Ed25519 public key the pack must be signed by (default: this laptop's device key)
+        #[arg(long)]
+        device_pub: Option<String>,
+    },
 }
 
 fn home(cli: &Cli) -> PathBuf {
@@ -791,6 +942,20 @@ fn home(cli: &Cli) -> PathBuf {
 }
 
 fn exit_code_for_error(error: &anyhow::Error) -> i32 {
+    let text = error.to_string();
+    if [
+        "grant_required",
+        "presence_denied",
+        "presence_unavailable",
+        "broker_unavailable",
+        "peer_refused",
+        "phi_handle_not_resolvable",
+    ]
+    .iter()
+    .any(|code| text.starts_with(code))
+    {
+        return 3;
+    }
     if let Some(vault) = error.downcast_ref::<VaultError>() {
         return match vault {
             VaultError::WrongPassword | VaultError::Missing | VaultError::Exists => 4,
@@ -803,7 +968,8 @@ fn exit_code_for_error(error: &anyhow::Error) -> i32 {
             VaultError::Io(_)
             | VaultError::Json(_)
             | VaultError::Crypto
-            | VaultError::Version(_) => 1,
+            | VaultError::Version(_)
+            | VaultError::KdfParamsOutOfRange => 1,
             VaultError::Protocol(_) => 3,
         };
     }
@@ -925,6 +1091,11 @@ fn generated_vault_key() -> String {
 }
 
 fn read_local_vault_key(cli: &Cli) -> Result<Option<SecretString>> {
+    // Managed machines keep the vault key in the Keychain (Phase 2A); the 0.3.7 file is the
+    // fallback and the only source on unmanaged machines.
+    if let Some(stored) = governance::stored_vault_key(cli)? {
+        return Ok(Some(stored));
+    }
     let path = vault_key_path(cli);
     if !path.exists() {
         return Ok(None);
@@ -947,6 +1118,12 @@ fn ensure_local_vault_key(cli: &Cli) -> Result<SecretString> {
         return Ok(existing);
     }
     let path = vault_key_path(cli);
+    if !path.exists() {
+        let generated = generated_vault_key();
+        if let Some(stored) = governance::create_stored_vault_key(cli, &generated)? {
+            return Ok(stored);
+        }
+    }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
         #[cfg(unix)]
@@ -1205,21 +1382,480 @@ fn explain_text(topic: Option<&ExplainTopic>) -> &'static str {
 }
 
 fn resolve_handle(vault: &mut Vault, handle: &str) -> Result<Option<String>> {
-    let Some(rest) = handle.strip_prefix("lockrail://secret/") else {
+    use lockrail_engine::handle::{Class, parse};
+    let Some(parsed) = parse(handle) else {
         return Ok(None);
     };
-    let Some((kind, fingerprint)) = rest.split_once('/') else {
-        return Ok(None);
+    // B2: PHI handles never turn back into values in a command, the relay or a file.
+    if parsed.class == Class::Phi {
+        return Err(anyhow!(
+            "phi_handle_not_resolvable: {} is a PHI handle; PHI is never resolved into a command, the relay or a file",
+            handle
+        ));
+    }
+    // D23: `SecretMetadata::kind` is the namespace prefix the finding was saved under (`env`,
+    // `prompt`, ...), not the detector kind. The detector kind and the handle fingerprint are
+    // both in the stored name: `<prefix>/<kind>/<fp>`, for keyed (`h_`) and 0.3.7 (`fp_`)
+    // handles alike.
+    let suffix = format!("/{}/{}", parsed.kind, parsed.fingerprint);
+    let entries = vault.list_secret_metadata();
+    let mut name = entries
+        .iter()
+        .filter(|item| item.name.ends_with(&suffix))
+        .map(|item| item.name.clone())
+        .min();
+    if name.is_none() && parsed.is_legacy() {
+        // Legacy index (D6): a 0.3.7 handle carries the unkeyed fingerprint the vault records for
+        // every value, so it still resolves after the value was re-saved under a keyed name.
+        name = entries
+            .iter()
+            .filter(|item| item.fingerprint == parsed.fingerprint)
+            .map(|item| item.name.clone())
+            .min();
+    }
+    match name {
+        Some(name) => Ok(Some(vault.use_key(&name)?)),
+        None => Ok(None),
+    }
+}
+
+/// What a Claude Code hook needs to know about this machine (Phase 6a).
+fn hook_context(cli: &Cli, aggressive: bool) -> Result<hooks::Context> {
+    let (effective, _) = lockrail_policy::evaluate(&lockrail_policy::Paths::system());
+    let policy = effective.policy;
+    Ok(hooks::Context {
+        // A prompt secret is only safe when the sealer is verified and the provider is one it opens.
+        sealer_active: proxy_check::check_process().is_ok()
+            && !proxy_check::unsealed_provider(|k| std::env::var(k).ok()),
+        phi_on: matches!(
+            policy.phi_mode,
+            lockrail_policy::PhiMode::Block | lockrail_policy::PhiMode::Seal
+        ),
+        baa: policy.tools.claude_code.baa,
+        aggressive,
+        fp_key: *governance::fp_key(cli)?,
+    })
+}
+
+/// The PostToolUse work: the replacement for the model (or `None` when the output is clean).
+/// The vault is opened once (one Argon2 unlock); saving sealed values for later restoration
+/// happens after the replacement is decided and is best-effort.
+fn post_tool_use(
+    cli: &Cli,
+    input: &str,
+    prefix: &str,
+    aggressive: bool,
+) -> Result<Option<serde_json::Value>> {
+    // B8: on a managed machine every hook checks that this session goes through the sealer. A
+    // violation is reported to the model, and the output is still sealed: the tool already ran,
+    // so skipping the scrub would leave its output raw (engineering review).
+    let violation = if lockrail_policy::Paths::system().is_managed() {
+        proxy_check::check_process().err()
+    } else {
+        None
     };
-    for item in vault.list_secret_metadata() {
-        if item.kind == kind
-            && item.fingerprint == fingerprint
-            && item.name.ends_with(&format!("/{kind}/{fingerprint}"))
-        {
-            return Ok(Some(vault.use_key(&item.name)?));
+    let ctx = hook_context(cli, aggressive)?;
+    let mut vault = if vault_path(cli).exists() {
+        Some(Vault::open(vault_path(cli), password(cli)?)?)
+    } else {
+        None
+    };
+    let mut entries = vault.as_ref().map(vault_entries_of).unwrap_or_default();
+    entries.extend(
+        protected_file_values(cli)
+            .into_iter()
+            .map(|v| ("lockrail-key".to_string(), v)),
+    );
+    let known = hooks::KnownValues::new(
+        entries.iter().map(|(k, v)| (k.as_str(), v.as_str())),
+        &ctx.fp_key,
+    );
+    let Some((mut output, report, found)) = hooks::tool_output_update(input, &ctx, &known) else {
+        return Ok(
+            violation.map(|v| serde_json::json!({"decision": "block", "reason": v.reason()}))
+        );
+    };
+    if let Some(v) = &violation {
+        output["decision"] = serde_json::json!("block");
+        output["reason"] = serde_json::json!(v.reason());
+    }
+    if let Some(vault) = vault.as_mut()
+        && !found.is_empty()
+    {
+        let mut seen = std::collections::HashSet::new();
+        let batch: Vec<(String, String)> = found
+            .iter()
+            .filter(|f| f.should_seal)
+            .map(|f| {
+                let fp = lockrail_engine::handle::keyed_fingerprint(&ctx.fp_key, &f.value);
+                (format!("{prefix}/{}/{fp}", f.kind), f.value.clone())
+            })
+            .filter(|(name, _)| seen.insert(name.clone()))
+            .take(MAX_SAVED_FINDINGS_PER_HOOK)
+            .collect();
+        // Restoration is secondary to sealing: a failed save keeps the replacement.
+        if let Err(e) = vault.add_keys_if_absent(batch) {
+            eprintln!("lockrail: sealed values not saved for restoration ({e})");
         }
     }
-    Ok(None)
+    let tool = serde_json::from_str::<serde_json::Value>(input)
+        .ok()
+        .and_then(|v| {
+            v.get("tool_name")
+                .and_then(|t| t.as_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_default();
+    if let Err(e) = AuditLog::new(audit_path(cli)).append(
+        "hook.post_tool_use.sealed",
+        "tool_output",
+        serde_json::json!({
+            "tool": tool,
+            "secrets": report.secrets,
+            "phi_withheld": report.phi_withheld,
+            "phi_sealed": report.phi_sealed,
+            "known_values": report.known_values,
+            "handles": dedup_capped(&report.handles, ledger::MAX_HANDLES_PER_EVENT),
+        }),
+    ) {
+        eprintln!("lockrail: audit event not written ({e})");
+    }
+    Ok(Some(output))
+}
+
+fn install_layout(cli: &Cli) -> Result<installer::Layout> {
+    Ok(installer::Layout {
+        user_home: dirs::home_dir().ok_or_else(|| anyhow!("no home directory"))?,
+        lockrail_home: home(cli),
+    })
+}
+
+/// `launchctl` and `security` run for real, except in a debug build with
+/// `LOCKRAIL_INSTALL_NO_SYSTEM` set, where they are only recorded (tests check every file change
+/// without touching the login session or the keychain).
+fn system_commands_enabled() -> bool {
+    !(cfg!(debug_assertions) && std::env::var_os("LOCKRAIL_INSTALL_NO_SYSTEM").is_some())
+}
+
+fn run_install(cli: &Cli, trust: bool, dry_run: bool) -> Result<serde_json::Value> {
+    if !cfg!(target_os = "macos") {
+        return Err(anyhow!(
+            "lockrail install sets up macOS services (launchd, login keychain); on this system run `lockrail setup` and `lockrail ai hooks`"
+        ));
+    }
+    let layout = install_layout(cli)?;
+    let helper = layout.helper();
+    let steps = vec![
+        format!("vault and keys in {}", layout.lockrail_home.display()),
+        format!("helper binary at {}", helper.display()),
+        format!(
+            "local CA at {} ({})",
+            layout.ca_pem().display(),
+            if trust {
+                "trusted for TLS in your login keychain; macOS asks for your password once"
+            } else {
+                "not trusted (--no-trust)"
+            }
+        ),
+        format!(
+            "sealer LaunchAgent {} (starts on demand at 127.0.0.1:8789)",
+            layout.launch_agent().display()
+        ),
+        format!(
+            "Claude Code hooks and proxy in {}",
+            layout.claude_settings().display()
+        ),
+    ];
+    if dry_run {
+        return Ok(serde_json::json!({"dry_run": true, "steps": steps}));
+    }
+    // Refuse early, before changing anything, if Claude Code's settings cannot be read.
+    installer::read_settings(&layout.claude_settings())?;
+    setup_apply(cli, &[], false)?;
+    // Any failure from here undoes what was changed, through the same path as uninstall, so a
+    // half-finished install never leaves hooks or a proxy pointing at nothing (hostile review).
+    match install_steps(cli, &layout, trust, steps) {
+        Ok(result) => Ok(result),
+        Err(error) => {
+            let rollback = run_uninstall(cli, false);
+            Err(anyhow!(
+                "install did not finish ({error:#}); {}",
+                if rollback.is_ok() {
+                    "everything it changed was rolled back"
+                } else {
+                    "rolling back also failed: run `lockrail uninstall --all`"
+                }
+            ))
+        }
+    }
+}
+
+fn install_steps(
+    cli: &Cli,
+    layout: &installer::Layout,
+    trust: bool,
+    mut steps: Vec<String>,
+) -> Result<serde_json::Value> {
+    let helper = layout.helper();
+    let helper_str = helper.to_string_lossy().to_string();
+
+    // 1. The helper, outside any app bundle (R1). Copied atomically; the running binary is the
+    //    source, so the app and the terminal install the same build.
+    let exe = std::env::current_exe()?.canonicalize()?;
+    if exe != helper {
+        fs::create_dir_all(helper.parent().expect("helper has a parent"))?;
+        let tmp = helper.with_extension("tmp");
+        fs::copy(&exe, &tmp)?;
+        fs::set_permissions(&tmp, std::os::unix::fs::PermissionsExt::from_mode(0o755))?;
+        fs::rename(&tmp, &helper)?;
+    }
+
+    // 2. The CA (name-constrained to the model hosts, one year) and its trust.
+    let ca = if ca_path(cli).exists() {
+        CaStore::load(&ca_path(cli))?
+    } else {
+        let store = CaStore::generate()?;
+        store.save(&ca_path(cli))?;
+        store
+    };
+    fs::create_dir_all(layout.support_dir())?;
+    fs::write(layout.ca_pem(), ca.cert_pem())?;
+    let mut sys = installer::System::new(system_commands_enabled());
+    let ca_trusted = trust && installer::trust_ca(&mut sys, layout)?;
+
+    // 3. The LaunchAgent.
+    fs::create_dir_all(layout.logs())?;
+    fs::create_dir_all(
+        layout
+            .launch_agent()
+            .parent()
+            .expect("LaunchAgents has a parent"),
+    )?;
+    fs::write(layout.launch_agent(), installer::launch_agent_plist(layout))?;
+    installer::load_agent(&mut sys, layout)?;
+
+    // 4. Claude Code: hooks pointing at the helper, then the proxy env (previous values kept;
+    //    a reinstall keeps the values from before the first install).
+    ai_install_hooks(Some("claude"), true, &helper_str)?;
+    let mut settings = installer::read_settings(&layout.claude_settings())?;
+    let new_previous = installer::set_claude_env(&mut settings, &layout.ca_pem());
+    installer::write_settings(&layout.claude_settings(), &settings)?;
+    let previous = match fs::read(layout.manifest()) {
+        Ok(bytes) => serde_json::from_slice::<installer::Manifest>(&bytes)
+            .map(|m| m.claude_env_previous)
+            .unwrap_or(new_previous),
+        Err(_) => new_previous,
+    };
+
+    // 5. The manifest uninstall reverses.
+    let manifest = installer::Manifest {
+        version: 1,
+        helper,
+        launch_agent: layout.launch_agent(),
+        ca_pem: layout.ca_pem(),
+        ca_trusted,
+        claude_env_previous: previous,
+    };
+    write_json_pretty_atomic(&layout.manifest(), &manifest)?;
+    AuditLog::new(audit_path(cli)).append(
+        "install.completed",
+        "agent_protection",
+        serde_json::json!({"ca_trusted": ca_trusted}),
+    )?;
+    if !ca_trusted {
+        steps.push("CA not trusted yet: run `lockrail install` again to trust it".into());
+    }
+    Ok(serde_json::json!({
+        "installed": true,
+        "ca_trusted": ca_trusted,
+        "steps": steps,
+        "system_commands": sys.log,
+    }))
+}
+
+fn run_uninstall(cli: &Cli, purge_data: bool) -> Result<serde_json::Value> {
+    let layout = install_layout(cli)?;
+    let manifest: installer::Manifest = fs::read(layout.manifest())
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+    let mut sys = installer::System::new(system_commands_enabled());
+    let mut steps = Vec::new();
+    // Read Claude Code's settings before changing anything: stopping the sealer while the hooks
+    // and proxy still point at it would break every Claude action (hostile review B3).
+    let settings_path = layout.claude_settings();
+    let settings = if settings_path.exists() {
+        Some(installer::read_settings(&settings_path)?)
+    } else {
+        None
+    };
+
+    // launchd and the login keychain exist only on macOS; elsewhere only hooks and proxy env were set.
+    let macos = cfg!(target_os = "macos");
+    if macos {
+        installer::unload_agent(&mut sys)?;
+    }
+    if fs::remove_file(layout.launch_agent()).is_ok() {
+        steps.push(format!("removed {}", layout.launch_agent().display()));
+    }
+    if let Some(mut settings) = settings {
+        installer::remove_lockrail_hooks(&mut settings);
+        let previous = if manifest.claude_env_previous.is_empty() {
+            // No manifest: remove only values Lockrail itself would have set.
+            let mut p = std::collections::BTreeMap::new();
+            if settings["env"]["HTTPS_PROXY"] == proxy_check::EXPECTED_PROXY {
+                p.insert("HTTPS_PROXY".to_string(), None);
+            }
+            if settings["env"]["NODE_EXTRA_CA_CERTS"] == layout.ca_pem().to_string_lossy().as_ref()
+            {
+                p.insert("NODE_EXTRA_CA_CERTS".to_string(), None);
+            }
+            p
+        } else {
+            manifest.claude_env_previous
+        };
+        installer::restore_claude_env(&mut settings, &previous);
+        installer::write_settings(&settings_path, &settings)?;
+        steps.push(format!(
+            "Claude Code hooks removed and proxy settings restored in {}",
+            settings_path.display()
+        ));
+    }
+    if macos {
+        installer::untrust_ca(&mut sys, &layout)?;
+        steps.push("Lockrail CA trust removed from the login keychain".into());
+    }
+    if fs::remove_dir_all(layout.support_dir()).is_ok() {
+        steps.push(format!("removed {}", layout.support_dir().display()));
+    }
+    let _ = fs::remove_file(layout.manifest());
+    if purge_data {
+        if layout.lockrail_home.exists() {
+            fs::remove_dir_all(&layout.lockrail_home)?;
+            steps.push(format!(
+                "deleted vault and audit log in {}",
+                layout.lockrail_home.display()
+            ));
+        }
+    } else {
+        steps.push(format!(
+            "kept vault and audit log in {} (--purge-data deletes them)",
+            layout.lockrail_home.display()
+        ));
+    }
+    Ok(serde_json::json!({"uninstalled": true, "steps": steps, "system_commands": sys.log}))
+}
+
+/// True when the process on the sealer port proves it holds this machine's key (a fresh nonce
+/// per call). Allows one second for launchd to start the sealer on first connection.
+fn sealer_verified(fp_key: &[u8; 32]) -> bool {
+    use rand_core::RngCore;
+    let mut nonce = [0u8; 16];
+    rand_core::OsRng.fill_bytes(&mut nonce);
+    lockrail_proxy::sealer_server::health_check(
+        ([127, 0, 0, 1], 8789).into(),
+        fp_key,
+        &hex::encode(nonce),
+        std::time::Duration::from_secs(1),
+    )
+}
+
+/// The PostToolUse input, kept for the panic hook so a panic withholds the output instead of
+/// leaving it raw.
+static POST_TOOL_INPUT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Distinct items in first-seen order, at most `cap`./// Distinct items in first-seen order, at most `cap`./// Distinct items in first-seen order, at most `cap`./// Distinct items in first-seen order, at most `cap`./// Distinct items in first-seen order, at most `cap`.
+fn dedup_capped(items: &[String], cap: usize) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    items
+        .iter()
+        .filter(|h| seen.insert(h.as_str()))
+        .take(cap)
+        .cloned()
+        .collect()
+}
+
+/// Sealed values kept per PostToolUse call so their handles stay resolvable. Output is sealed in
+/// full either way; past this cap a handle simply cannot be restored by the edit guard.
+const MAX_SAVED_FINDINGS_PER_HOOK: usize = 256;
+
+/// Every secret value in the vault (user secrets and values sealed by earlier hooks), for the
+/// known-value scrub and handle resolution. No vault yet means no values. A vault that exists
+/// but cannot be opened is an error, so the hook fails closed.
+/// Every vault value with the detector kind it carries: entries saved by the hooks are named
+/// `<prefix>/<kind>/<fingerprint>`, so a re-seen value keeps its handle; user-set secrets are
+/// `vault-value`.
+fn vault_entries_of(vault: &Vault) -> Vec<(String, String)> {
+    vault
+        .secrets_for_env(None)
+        .into_iter()
+        .map(|(name, record)| {
+            let parts: Vec<&str> = name.split('/').collect();
+            let kind = match parts.as_slice() {
+                [_, kind, fp]
+                    if (fp.starts_with("h_") || fp.starts_with("fp_"))
+                        && !kind.is_empty()
+                        && kind
+                            .bytes()
+                            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') =>
+                {
+                    kind.to_string()
+                }
+                _ => "vault-value".to_string(),
+            };
+            (kind, record.value.clone())
+        })
+        .collect()
+}
+
+fn vault_values(cli: &Cli) -> Result<Vec<String>> {
+    let path = vault_path(cli);
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let vault = Vault::open(path, password(cli)?)?;
+    Ok(vault
+        .secrets_for_env(None)
+        .into_iter()
+        .map(|(_, record)| record.value.clone())
+        .collect())
+}
+
+/// The contents of Lockrail's own key files, in the forms a tool would print them (text, hex,
+/// base64), so output that reaches them by a route the guard does not see (`grep -r . ~`, a
+/// script) is still scrubbed (security review finding 2). Missing files are skipped.
+fn protected_file_values(cli: &Cli) -> Vec<String> {
+    use base64ct::{Base64, Encoding};
+    let home = home(cli);
+    let mut files = vec![home.join("vault.key")];
+    if let Ok(entries) = fs::read_dir(home.join("keys")) {
+        files.extend(entries.flatten().map(|e| e.path()));
+    }
+    let mut out = Vec::new();
+    for path in files {
+        let Ok(bytes) = fs::read(&path) else { continue };
+        if bytes.is_empty() {
+            continue;
+        }
+        if let Ok(text) = std::str::from_utf8(&bytes) {
+            out.push(text.trim().to_string());
+        }
+        out.push(hex::encode(&bytes));
+        out.push(Base64::encode_string(&bytes));
+    }
+    out
+}
+
+/// `seal_text` with keyed handles (Phase 3D, D6): fingerprints are `HMAC(fp_key, value)`.
+fn seal_text_cli(
+    cli: &Cli,
+    input: &str,
+    options: SealOptions,
+) -> Result<lockrail_protocol::seal::SealResult> {
+    let fp_key = governance::fp_key(cli)?;
+    Ok(lockrail_engine::handle::seal_text_keyed(
+        input, options, &fp_key,
+    ))
 }
 
 fn parse_env_entries(text: &str) -> Vec<(String, String)> {
@@ -1262,37 +1898,6 @@ fn html_escape(text: &str) -> String {
         .collect()
 }
 
-fn collect_json_strings(value: &serde_json::Value, out: &mut Vec<String>) {
-    match value {
-        serde_json::Value::String(text) => out.push(text.clone()),
-        serde_json::Value::Array(items) => {
-            for item in items {
-                collect_json_strings(item, out);
-            }
-        }
-        serde_json::Value::Object(map) => {
-            for item in map.values() {
-                collect_json_strings(item, out);
-            }
-        }
-        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {}
-    }
-}
-
-fn text_for_post_tool_use_scan(input: &str) -> String {
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(input) else {
-        return input.to_string();
-    };
-    let target = json.get("tool_response").unwrap_or(&json);
-    let mut strings = Vec::new();
-    collect_json_strings(target, &mut strings);
-    if strings.is_empty() {
-        target.to_string()
-    } else {
-        strings.join("\n")
-    }
-}
-
 fn save_sealed_findings(vault: &mut Vault, prefix: &str, findings: &[SecretFinding]) -> Result<()> {
     for finding in findings.iter().filter(|finding| finding.should_seal) {
         let name = format!("{prefix}/{}/{}", finding.kind, finding.fingerprint);
@@ -1323,13 +1928,14 @@ fn scan_and_seal(
     prefix: &str,
     aggressive: bool,
 ) -> Result<serde_json::Value> {
-    let sealed = seal_text(
+    let sealed = seal_text_cli(
+        cli,
         input,
         SealOptions {
             aggressive,
             protection_mode: true,
         },
-    );
+    )?;
     let mut vault = Vault::open(vault_path(cli), password(cli)?)?;
     save_sealed_findings(&mut vault, prefix, &sealed.findings)?;
     AuditLog::new(audit_path(cli)).append(
@@ -1426,6 +2032,7 @@ fn run_interactive(cli: &Cli, command: &[String]) -> Result<()> {
     // Scan AI tool output for secrets before forwarding to the user's terminal.
     // This catches cases where the model echoes or generates a secret in its response.
     let options = lockrail_protocol::seal::SealOptions::default();
+    let fp_key = governance::fp_key(cli)?;
     let output_thread = thread::spawn(move || {
         use std::io::{BufRead, BufReader, Write};
         let mut stdout = std::io::stdout();
@@ -1435,7 +2042,7 @@ fn run_interactive(cli: &Cli, command: &[String]) -> Result<()> {
                 Ok(l) => l,
                 Err(_) => break,
             };
-            let result = lockrail_protocol::seal::seal_text(&line, options);
+            let result = lockrail_engine::handle::seal_text_keyed(&line, options, &fp_key);
             let _ = stdout.write_all(result.safe_text.as_bytes());
             let _ = stdout.write_all(b"\n");
             let _ = stdout.flush();
@@ -1581,6 +2188,8 @@ fn setup_tools(tools: &[String]) -> Vec<String> {
 }
 
 fn setup_apply(cli: &Cli, tools: &[String], reset: bool) -> Result<serde_json::Value> {
+    // Managed machines move a legacy vault.key into the Keychain once; unmanaged: no-op.
+    governance::auto_migrate(cli)?;
     let selected_tools = setup_tools(tools);
     let mut recovered_from = if reset {
         archive_lockrail_home(cli)?
@@ -1775,7 +2384,7 @@ fn demo_cases(cli: &Cli) -> Result<Vec<DemoCase>> {
     let mut vault = Vault::open(vault_path(cli), password(cli)?)?;
     let mut out = Vec::new();
     for (name, raw_input, prefix) in samples {
-        let sealed = seal_text(raw_input, SealOptions::default());
+        let sealed = seal_text_cli(cli, raw_input, SealOptions::default())?;
         save_sealed_findings(&mut vault, prefix, &sealed.findings)?;
         AuditLog::new(audit_path(cli)).append(
             "demo.case",
@@ -1968,7 +2577,7 @@ fn store_writable(path: &PathBuf) -> bool {
 
 fn doctor(cli: &Cli) -> serde_json::Value {
     let vault_exists = vault_path(cli).exists();
-    let vault_key_exists = vault_key_path(cli).exists();
+    let vault_key_exists = vault_key_path(cli).exists() || governance::store_has_vault_key(cli);
     let legacy_password_vault_without_key = vault_exists
         && !vault_key_exists
         && cli.password.is_none()
@@ -2096,13 +2705,14 @@ fn env_seal(
     dry_run: bool,
 ) -> Result<serde_json::Value> {
     let input = fs::read_to_string(path)?;
-    let sealed = seal_text(
+    let sealed = seal_text_cli(
+        cli,
         &input,
         SealOptions {
             aggressive,
             protection_mode: true,
         },
-    );
+    )?;
     if !dry_run {
         let mut vault = Vault::open(vault_path(cli), password(cli)?)?;
         save_sealed_findings(&mut vault, prefix, &sealed.findings)?;
@@ -2132,6 +2742,10 @@ fn env_seal(
 fn env_run(cli: &Cli, file: &Path, command: &[String], dry_run: bool) -> Result<serde_json::Value> {
     let input = fs::read_to_string(file)?;
     let entries = parse_env_entries(&input);
+    // R-11/B2: a command that receives resolved secrets needs a grant for its fingerprint.
+    if !dry_run && entries.iter().any(|(_, v)| v.starts_with("lockrail://")) {
+        governance::authorize_command(cli, command, Some(file))?;
+    }
     let mut resolved = BTreeMap::new();
     let mut vault = Vault::open(vault_path(cli), password(cli)?)?;
     for (key, value) in entries {
@@ -2141,6 +2755,7 @@ fn env_run(cli: &Cli, file: &Path, command: &[String], dry_run: bool) -> Result<
             resolved.insert(key, value);
         }
     }
+    inject::check_reserved_env_names(resolved.keys())?;
     if dry_run {
         return Ok(serde_json::json!({
             "file": file,
@@ -2155,13 +2770,23 @@ fn env_run(cli: &Cli, file: &Path, command: &[String], dry_run: bool) -> Result<
     AuditLog::new(audit_path(cli)).append(
         "env.run",
         file.display().to_string(),
-        serde_json::json!({"command": command, "env_keys": resolved.keys().cloned().collect::<Vec<_>>()}),
+        // Log the program and argument count only: argv can carry secrets (m6).
+        serde_json::json!({"program": command[0], "argc": command.len(), "env_keys": resolved.keys().cloned().collect::<Vec<_>>()}),
     )?;
     Ok(serde_json::json!({
-        "status": output.status.code().unwrap_or_default(),
+        "status": exit_code_of(output.status),
         "stdout": redact_for_display(&String::from_utf8_lossy(&output.stdout)),
         "stderr": redact_for_display(&String::from_utf8_lossy(&output.stderr)),
     }))
+}
+
+/// The shell convention: the child's code, or 128 + the signal that killed it (0.3.7 reported a
+/// signal kill as 0, and `env run` exited 0 whatever the child did).
+fn exit_code_of(status: std::process::ExitStatus) -> i32 {
+    use std::os::unix::process::ExitStatusExt;
+    status
+        .code()
+        .unwrap_or_else(|| 128 + status.signal().unwrap_or(0))
 }
 
 fn proof_pack(cli: &Cli, out: &Path, markdown: bool) -> Result<serde_json::Value> {
@@ -2185,7 +2810,10 @@ fn proof_pack(cli: &Cli, out: &Path, markdown: bool) -> Result<serde_json::Value
             "version": env!("CARGO_PKG_VERSION")
         }
     });
-    fs::write(out, serde_json::to_vec_pretty(&report)?)?;
+    let report_bytes = serde_json::to_vec_pretty(&report)?;
+    fs::write(out, &report_bytes)?;
+    // D17: the pack is signed with the device key; `proof verify` fails on any changed byte.
+    governance::sign_proof_pack(cli, out, &report_bytes)?;
     if markdown {
         let md_path = out.with_extension("md");
         let markdown_body = format!(
@@ -2298,7 +2926,7 @@ fn ai_disable(tool: Option<&str>, quiet: bool) -> Result<serde_json::Value> {
     Ok(serde_json::json!({ "removed": removed }))
 }
 
-fn ai_install_hooks(tool: Option<&str>, quiet: bool) -> Result<serde_json::Value> {
+fn ai_install_hooks(tool: Option<&str>, quiet: bool, exe: &str) -> Result<serde_json::Value> {
     let target = tool.unwrap_or("claude");
     if target != "claude" {
         return Err(anyhow!(
@@ -2313,13 +2941,9 @@ fn ai_install_hooks(tool: Option<&str>, quiet: bool) -> Result<serde_json::Value
         fs::create_dir_all(parent)?;
     }
 
-    let mut settings: serde_json::Value = if settings_path.exists() {
-        serde_json::from_slice(&fs::read(&settings_path)?).unwrap_or_else(|_| serde_json::json!({}))
-    } else {
-        serde_json::json!({})
-    };
-
-    let exe = std::env::current_exe()?.to_string_lossy().to_string();
+    // An unreadable settings file is refused, never replaced (engineering review: it used to be
+    // overwritten with `{}`, losing the user's Claude Code settings).
+    let mut settings = installer::read_settings(&settings_path)?;
 
     // Ensure settings.hooks exists as an object before we try to mutate sub-keys.
     {
@@ -2338,10 +2962,21 @@ fn ai_install_hooks(tool: Option<&str>, quiet: bool) -> Result<serde_json::Value
             .and_then(serde_json::Value::as_str)
     }
 
-    // Upsert one hook event entry. Returns true if the exact command is already present.
-    fn insert_hook(settings: &mut serde_json::Value, event: &str, command: &str) -> Result<bool> {
-        let entry = serde_json::json!({
-            "hooks": [{ "type": "command", "command": command }]
+    // Upsert one hook event entry: an existing Lockrail entry for this event (any path, quoted or
+    // not, older installs included) is updated in place to the current command, `onFailure:
+    // block` (a crashed or timed-out hook stops the turn instead of letting it through) and a
+    // timeout. Returns true when nothing had to change.
+    fn insert_hook(
+        settings: &mut serde_json::Value,
+        event: &str,
+        command: &str,
+        suffix: &str,
+    ) -> Result<bool> {
+        let hook = serde_json::json!({
+            "type": "command",
+            "command": command,
+            "onFailure": "block",
+            "timeout": 30
         });
         let hooks_obj = settings
             .get_mut("hooks")
@@ -2349,45 +2984,58 @@ fn ai_install_hooks(tool: Option<&str>, quiet: bool) -> Result<serde_json::Value
             .ok_or_else(|| anyhow!("hooks is not a JSON object"))?;
         let arr = hooks_obj
             .entry(event)
-            .or_insert_with(|| serde_json::json!([]));
-        let already = arr
-            .as_array()
-            .map(|a| a.iter().any(|value| hook_command(value) == Some(command)))
-            .unwrap_or(false);
-        if !already {
-            arr.as_array_mut()
-                .ok_or_else(|| anyhow!("{event} is not a JSON array"))?
-                .push(entry);
+            .or_insert_with(|| serde_json::json!([]))
+            .as_array_mut()
+            .ok_or_else(|| anyhow!("{event} is not a JSON array"))?;
+        let ours = |value: &serde_json::Value| {
+            hook_command(value)
+                .is_some_and(|c| c.contains("lockrail") && c.trim_end().ends_with(suffix))
+        };
+        if let Some(existing) = arr.iter_mut().find(|v| ours(v)) {
+            let unchanged = existing.get("hooks").and_then(|h| h.get(0)) == Some(&hook);
+            existing["hooks"] = serde_json::json!([hook]);
+            return Ok(unchanged);
         }
-        Ok(already)
+        arr.push(serde_json::json!({ "hooks": [hook] }));
+        Ok(false)
     }
 
+    // Single-quote the binary path for the shell Claude Code runs hooks with.
+    let quoted = format!("'{}'", exe.replace('\'', "'\\''"));
     let ups_already = insert_hook(
         &mut settings,
         "UserPromptSubmit",
-        &format!("{exe} hook prompt"),
+        &format!("{quoted} hook prompt"),
+        "hook prompt",
     )?;
     let ptu_already = insert_hook(
         &mut settings,
         "PostToolUse",
-        &format!("{exe} hook post-tool-use"),
+        &format!("{quoted} hook post-tool-use"),
+        "hook post-tool-use",
+    )?;
+    let pre_already = insert_hook(
+        &mut settings,
+        "PreToolUse",
+        &format!("{quoted} hook pre-tool-use"),
+        "hook pre-tool-use",
     )?;
 
     if settings_path.exists() {
         let backup_path = settings_path.with_extension("json.lockrail.bak");
         fs::copy(&settings_path, backup_path)?;
     }
-    write_json_pretty_atomic(&settings_path, &settings)?;
+    installer::write_settings(&settings_path, &settings)?;
     if !quiet {
         eprintln!(
-            "lockrail: installed UserPromptSubmit + PostToolUse hooks in {}",
+            "lockrail: installed UserPromptSubmit, PreToolUse and PostToolUse hooks in {}",
             settings_path.display()
         );
     }
     Ok(serde_json::json!({
-        "hooks": ["UserPromptSubmit", "PostToolUse"],
+        "hooks": ["UserPromptSubmit", "PreToolUse", "PostToolUse"],
         "settings": settings_path,
-        "already_present": { "UserPromptSubmit": ups_already, "PostToolUse": ptu_already },
+        "already_present": { "UserPromptSubmit": ups_already, "PreToolUse": pre_already, "PostToolUse": ptu_already },
     }))
 }
 
@@ -2507,6 +3155,7 @@ fn ui_shell(active: &str, content: &str) -> Html<String> {
         ("secrets", "/secrets", "&#128274;", "Secrets"),
         ("agents", "/agents", "&#129302;", "Agents"),
         ("relay", "/relay", "&#128257;", "Relay &amp; Policy"),
+        ("exposure", "/exposure", "&#128737;", "Credential Exposure"),
         ("audit", "/audit", "&#128196;", "Audit Log"),
         ("demo", "/demo", "&#9654;", "Demo"),
     ];
@@ -2571,6 +3220,83 @@ async fn ui_api_secrets(State(state): State<UiState>) -> Json<serde_json::Value>
         })
         .collect();
     Json(serde_json::json!({"secrets": list}))
+}
+
+async fn ui_api_ledger(State(state): State<UiState>) -> Json<serde_json::Value> {
+    let events = AuditLog::new(state.home.join("audit.jsonl"))
+        .read_all()
+        .unwrap_or_default();
+    let sealer = lockrail_audit::events::EventLog::new(state.home.join("events"))
+        .read_all()
+        .unwrap_or_default();
+    Json(serde_json::to_value(ledger::build(&events, &sealer)).unwrap_or_default())
+}
+
+/// Credential exposure: per credential (keyed handle, never a value) how often Lockrail stopped
+/// it before a model, by which tool, and whether `lockrail sweep` found it in old transcripts.
+async fn ui_exposure(State(state): State<UiState>) -> Html<String> {
+    let events = AuditLog::new(state.home.join("audit.jsonl"))
+        .read_all()
+        .unwrap_or_default();
+    let sealer = lockrail_audit::events::EventLog::new(state.home.join("events"))
+        .read_all()
+        .unwrap_or_default();
+    let l = ledger::build(&events, &sealer);
+    let leaked = l
+        .credentials
+        .iter()
+        .filter(|c| c.found_in_transcripts)
+        .count();
+    let mut content = String::new();
+    content.push_str(r#"<div class="page-head"><div><div class="page-title">Credential Exposure</div><div class="page-sub">Every credential Lockrail kept away from AI models, by keyed handle. Values are never stored here.</div></div></div>"#);
+    content.push_str("<div class=\"cards\">");
+    for (label, value, tone) in [
+        ("Credentials seen", l.credentials.len(), ""),
+        ("Stopped before a model", l.total_stops, "ok"),
+        ("Prompts blocked", l.prompts_blocked, ""),
+        ("Guarded tool calls", l.tool_calls_guarded, ""),
+        (
+            "Leaked before Lockrail",
+            leaked,
+            if leaked > 0 { "err" } else { "ok" },
+        ),
+    ] {
+        content.push_str(&format!(
+            r#"<div class="card"><div class="card-label">{label}</div><div class="card-val {tone}">{value}</div></div>"#
+        ));
+    }
+    content.push_str("</div>");
+    if leaked > 0 {
+        content.push_str(r#"<div class="alert" style="background:rgba(248,81,73,0.08);border:1px solid rgba(248,81,73,0.3);color:var(--err)">&#9888; Credentials marked LEAKED were found in AI transcripts from before Lockrail (<code>lockrail sweep</code>). Rotate them.</div>"#);
+    }
+    if l.credentials.is_empty() {
+        content.push_str(r#"<div class="empty"><div class="empty-icon">&#128737;</div><div>Nothing stopped yet.<br>Install the hooks with <code>lockrail ai hooks</code>, or run <code>lockrail sweep</code> to check old transcripts.</div></div>"#);
+    } else {
+        content.push_str("<div class=\"table-wrap\"><table><tr><th>Status</th><th>Kind</th><th>Stopped</th><th>Prompts blocked</th><th>By tool</th><th>Last seen</th><th>Handle</th></tr>");
+        for c in l.credentials.iter().take(500) {
+            let status = if c.found_in_transcripts {
+                "<span class=\"badge badge-err\">LEAKED</span>"
+            } else {
+                "<span class=\"badge badge-ok\">protected</span>"
+            };
+            let tools: Vec<String> = c
+                .by_tool
+                .iter()
+                .map(|(t, n)| format!("{} {n}", html_escape(t)))
+                .collect();
+            content.push_str(&format!(
+                "<tr><td>{status}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td><code>{}</code></td></tr>",
+                html_escape(&c.kind),
+                c.stopped,
+                c.prompts_blocked,
+                tools.join(", "),
+                c.last_seen,
+                html_escape(&c.handle)
+            ));
+        }
+        content.push_str("</table></div>");
+    }
+    ui_shell("exposure", &content)
 }
 
 async fn ui_api_audit(State(state): State<UiState>) -> Json<serde_json::Value> {
@@ -3019,6 +3745,8 @@ fn ui_router(home: PathBuf, password: SecretString, session_token: String) -> Ro
         .route("/agents", get(ui_agents))
         .route("/relay", get(ui_relay))
         .route("/audit", get(ui_audit))
+        .route("/exposure", get(ui_exposure))
+        .route("/api/ledger", get(ui_api_ledger))
         .route("/demo", get(ui_demo))
         .route("/api/status", get(ui_api_status))
         .route("/api/secrets", get(ui_api_secrets))
@@ -3082,16 +3810,91 @@ fn save_config(cli: &Cli, config: &AppConfig) -> Result<()> {
     Ok(())
 }
 
+/// D11: the client side of proof-bound capabilities. The body hash is computed over the same
+/// bytes the relay hashes (`serde_json::to_vec` of the parsed JSON), and `task_id`/`purpose`
+/// come from the verified capability, so the relay's proof check matches exactly.
+async fn relay_call(
+    cli: &Cli,
+    agent_name: &str,
+    capability: &str,
+    method: &str,
+    url: &str,
+    json: Option<&str>,
+) -> Result<serde_json::Value> {
+    let token = match capability.strip_prefix('@') {
+        Some(path) => fs::read_to_string(path)?.trim().to_string(),
+        None => capability.to_string(),
+    };
+    let mut vault = Vault::open(vault_path(cli), password(cli)?)?;
+    let verified =
+        CapabilityToken::verify(&token, &vault.issuer_public_key()?, &vault.revoked_list())?;
+    let agent_id = agent_by_name(&vault, agent_name)?.agent_id;
+    let agent = vault.load_agent(&agent_id)?;
+    let body: Option<serde_json::Value> = json.map(serde_json::from_str).transpose()?;
+    let body_bytes = match &body {
+        Some(value) => serde_json::to_vec(value)?,
+        None => Vec::new(),
+    };
+    let proof = lockrail_protocol::AccessProof::sign(
+        &agent,
+        &token,
+        method,
+        url,
+        &lockrail_protocol::body_hash(&body_bytes),
+        verified.claims.task_id.clone(),
+        verified.claims.purpose.clone(),
+    )?;
+    let config = load_config(cli)?;
+    let request = serde_json::json!({
+        "capability": token,
+        "method": method,
+        "upstream": url,
+        "json": body,
+        "proof": proof,
+    });
+    let response = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()?
+        .post(format!("http://{}/relay", config.relay_listen))
+        .json(&request)
+        .send()
+        .await?;
+    let status = response.status().as_u16();
+    let value: serde_json::Value = response.json().await.unwrap_or(serde_json::Value::Null);
+    Ok(serde_json::json!({"relay_status": status, "response": value}))
+}
+
+/// D15: a dotenv full of secrets is written `0600`, never with the umask default, and an
+/// existing file is tightened before it is overwritten.
+fn write_private_dotenv(path: &Path, content: &[u8]) -> Result<()> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        options.mode(0o600);
+        if path.exists() {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+        }
+    }
+    let mut file = options.open(path)?;
+    file.write_all(content)?;
+    file.sync_all()?;
+    Ok(())
+}
+
 fn relay_state(cli: &Cli) -> Result<RelayState> {
     let vault = Vault::open(vault_path(cli), password(cli)?)?;
+    // D10: replay and usage stores are HMAC'd under audit_key.
+    let audit_key = governance::key_store(cli)?.0.audit_key()?;
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
     Ok(RelayState {
         vault: Arc::new(Mutex::new(vault)),
         audit: AuditLog::new(audit_path(cli)),
-        replay_store: Arc::new(FileReplayStore::new(replay_path(cli))),
-        usage_store: Arc::new(FileUsageStore::new(usage_path(cli))),
+        replay_store: Arc::new(FileReplayStore::with_key(replay_path(cli), *audit_key)),
+        usage_store: Arc::new(FileUsageStore::with_key(usage_path(cli), *audit_key)),
         client,
     })
 }
@@ -3167,9 +3970,14 @@ fn preset_claims(
             claims.allowed_query_prefixes = vec![format!("{}=", preset.inject_header)];
         }
     }
-    if let Some(agent_id) = agent {
+    if let Some(agent) = agent {
         let vault = Vault::open(vault_path(cli), password(cli)?)?;
-        let public = vault.agent_public(&agent_id)?;
+        // D24: `--agent` is documented as the agent *name*; 0.3.7 looked it up as an id and
+        // failed with "secret not found". Name first, then id, so both keep working.
+        let public = match agent_by_name(&vault, &agent) {
+            Ok(public) => public,
+            Err(_) => vault.agent_public(&agent)?,
+        };
         claims.agent_public_key = Some(public.public_key);
         claims.require_proof = true;
     }
@@ -3184,7 +3992,7 @@ fn agent_by_name(vault: &Vault, name: &str) -> Result<lockrail_protocol::AgentPu
         .ok_or_else(|| anyhow!("agent not found"))
 }
 
-fn ca_path(cli: &Cli) -> PathBuf {
+pub(crate) fn ca_path(cli: &Cli) -> PathBuf {
     home(cli).join("proxy-ca.json")
 }
 
@@ -3217,6 +4025,28 @@ fn warn_password_in_env_once(home: &Path, quiet: bool) {
 async fn main() {
     tracing_subscriber::fmt::init();
     let cli = Cli::parse();
+    // A hook that crashes or errors must fail CLOSED (exit 2 blocks in Claude Code); any other
+    // non-zero exit is treated as a non-blocking error and lets the prompt or tool output through.
+    let is_hook = matches!(cli.command, Commands::Hook { .. });
+    if is_hook {
+        std::panic::set_hook(Box::new(|_| {
+            // PostToolUse runs after the tool: exiting 2 would leave its raw output in the
+            // model's context, so a panic there withholds the output and exits 0 instead
+            // (hostile review B2). Other hooks exit 2, which blocks the prompt or tool call.
+            if let Some(input) = POST_TOOL_INPUT.get() {
+                if let Some(out) = hooks::withhold_all(
+                    input,
+                    "Lockrail could not scan this tool output (internal error), so it was withheld.",
+                ) {
+                    println!("{out}");
+                }
+                eprintln!("lockrail: tool output withheld (internal error)");
+                std::process::exit(0);
+            }
+            eprintln!("lockrail: hook failed closed (internal error)");
+            std::process::exit(HOOK_FAIL_CLOSED_EXIT);
+        }));
+    }
     // Show the env-var warning only for commands that open the vault,
     // and only once total (marker file suppresses on repeat invocations).
     let accesses_vault = !matches!(
@@ -3241,9 +4071,16 @@ async fn main() {
                  Reset archives the old ~/.lockrail directory before creating a fresh setup."
             );
         }
+        if is_hook {
+            eprintln!("lockrail: hook failed closed");
+            std::process::exit(HOOK_FAIL_CLOSED_EXIT);
+        }
         std::process::exit(exit_code_for_error(&error));
     }
 }
+
+/// Exit code that makes Claude Code block the prompt or tool call.
+const HOOK_FAIL_CLOSED_EXIT: i32 = 2;
 
 async fn run(cli: Cli) -> Result<()> {
     match &cli.command {
@@ -3339,6 +4176,176 @@ async fn run(cli: Cli) -> Result<()> {
                     }
                     println!();
                 }
+            }
+        }
+        Commands::Install { no_trust, dry_run } => {
+            let result = run_install(&cli, !*no_trust, *dry_run)?;
+            if cli.json {
+                print_value(&cli, &result)?;
+            } else {
+                println!(
+                    "{}",
+                    if *dry_run {
+                        "lockrail install (dry run): nothing was changed"
+                    } else {
+                        "lockrail install: agent protection is set up"
+                    }
+                );
+                for step in result["steps"].as_array().into_iter().flatten() {
+                    println!("  {}", step.as_str().unwrap_or_default());
+                }
+                if !*dry_run {
+                    println!(
+                        "Run `lockrail protection` to check it, and start a new Claude Code session."
+                    );
+                }
+            }
+        }
+        Commands::Uninstall { all, purge_data } => {
+            if !*all {
+                return Err(anyhow!(
+                    "pass --all to remove the helper, LaunchAgent, CA trust, hooks and proxy settings"
+                ));
+            }
+            let result = run_uninstall(&cli, *purge_data)?;
+            if cli.json {
+                print_value(&cli, &result)?;
+            } else {
+                println!("lockrail uninstall: removed");
+                for step in result["steps"].as_array().into_iter().flatten() {
+                    println!("  {}", step.as_str().unwrap_or_default());
+                }
+            }
+        }
+        Commands::Protection => {
+            let layout = install_layout(&cli)?;
+            let mut sys = installer::System::new(system_commands_enabled());
+            let sealer_ok = governance::fp_key(&cli)
+                .map(|k| sealer_verified(&k))
+                .unwrap_or(false);
+            let checks = installer::protection(&layout, &mut sys, sealer_ok);
+            let protected = checks.iter().all(|c| c.ok);
+            if cli.json {
+                print_value(
+                    &cli,
+                    &serde_json::json!({"protected": protected, "checks": checks}),
+                )?;
+            } else {
+                println!(
+                    "{}",
+                    if protected {
+                        "Agent protection: on"
+                    } else {
+                        "Agent protection: needs attention"
+                    }
+                );
+                for c in &checks {
+                    match &c.fix {
+                        None => println!("  ok    {}", c.name),
+                        Some(fix) => println!("  FIX   {:<20} {fix}", c.name),
+                    }
+                }
+            }
+            if !protected {
+                std::process::exit(1);
+            }
+        }
+        Commands::Ledger => {
+            let events = AuditLog::new(audit_path(&cli)).read_all()?;
+            let sealer = governance::events_log(&cli).read_all().unwrap_or_default();
+            let l = ledger::build(&events, &sealer);
+            if cli.json {
+                print_value(&cli, &serde_json::to_value(&l)?)?;
+            } else {
+                println!(
+                    "lockrail ledger: {} credential(s), {} stop(s) before a model, {} prompt(s) blocked, {} guarded tool call(s)",
+                    l.credentials.len(),
+                    l.total_stops,
+                    l.prompts_blocked,
+                    l.tool_calls_guarded
+                );
+                for c in &l.credentials {
+                    let tools: Vec<String> =
+                        c.by_tool.iter().map(|(t, n)| format!("{t} {n}")).collect();
+                    println!(
+                        "  {:<6} {:<24} stopped {:>4}  prompts {:>3}  {}  {}",
+                        if c.found_in_transcripts {
+                            "LEAKED"
+                        } else {
+                            "safe"
+                        },
+                        c.kind,
+                        c.stopped,
+                        c.prompts_blocked,
+                        tools.join(", "),
+                        c.handle
+                    );
+                }
+                if l.credentials.iter().any(|c| c.found_in_transcripts) {
+                    println!("LEAKED: found in AI transcripts from before Lockrail. Rotate these.");
+                }
+            }
+        }
+        Commands::Sweep { paths, no_phi } => {
+            let roots: Vec<PathBuf> = if paths.is_empty() {
+                let home = dirs::home_dir().unwrap_or_default();
+                vec![
+                    home.join(".claude").join("projects"),
+                    home.join(".codex").join("sessions"),
+                ]
+            } else {
+                paths.clone()
+            };
+            let fp_key = governance::fp_key(&cli)?;
+            let report = sweep::sweep(&roots, &fp_key, !*no_phi);
+            AuditLog::new(audit_path(&cli)).append(
+                "sweep.completed",
+                "transcripts",
+                serde_json::json!({
+                    "files_scanned": report.files_scanned,
+                    "files_with_findings": report.files_with_findings.len(),
+                    "secrets_by_kind": report.secrets_by_kind,
+                    "phi_by_kind": report.phi_by_kind,
+                    // Keyed handles of leaked credentials, for the exposure ledger.
+                    "handles": dedup_capped(
+                        &report
+                            .files_with_findings
+                            .iter()
+                            .flat_map(|f| f.hits.iter().flat_map(|h| h.secrets.iter().cloned()))
+                            .collect::<Vec<_>>(),
+                        2000,
+                    ),
+                }),
+            )?;
+            if cli.json {
+                print_value(&cli, &serde_json::to_value(&report)?)?;
+            } else {
+                println!(
+                    "lockrail sweep: {} transcript file(s), {} MiB scanned",
+                    report.files_scanned,
+                    report.bytes_scanned / (1024 * 1024)
+                );
+                if report.files_with_findings.is_empty() {
+                    println!("no secrets or PHI found");
+                }
+                for f in &report.files_with_findings {
+                    let secrets: usize = f.hits.iter().map(|h| h.secrets.len()).sum();
+                    let phi: usize = f.hits.iter().map(|h| h.phi.values().sum::<usize>()).sum();
+                    println!(
+                        "  {}: {secrets} secret(s), {phi} PHI identifier(s) on {} line(s)",
+                        f.path.display(),
+                        f.hits.len()
+                    );
+                }
+                if !report.secrets_by_kind.is_empty() {
+                    println!("secrets by kind: {:?}", report.secrets_by_kind);
+                }
+                if !report.phi_by_kind.is_empty() {
+                    println!("PHI by kind: {:?}", report.phi_by_kind);
+                }
+                println!(
+                    "Rotate any secret listed here; values are not shown. Use --json for line numbers and handles."
+                );
             }
         }
         Commands::Status => {
@@ -3464,7 +4471,14 @@ async fn run(cli: Cli) -> Result<()> {
                 dry_run,
                 command,
             } => {
-                print_value(&cli, &env_run(&cli, file, command, *dry_run)?)?;
+                let result = env_run(&cli, file, command, *dry_run)?;
+                print_value(&cli, &result)?;
+                // A failing command must fail `env run` too, or an agent or CI reads red tests
+                // as green (engineering review blocker 1).
+                let code = result["status"].as_i64().unwrap_or(0);
+                if code != 0 {
+                    std::process::exit(i32::try_from(code).unwrap_or(1));
+                }
             }
         },
         Commands::Pipe { prefix, aggressive } => {
@@ -3512,6 +4526,14 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::Proof { command } => match command {
             ProofCommands::Pack { out, markdown } => {
                 print_value(&cli, &proof_pack(&cli, out, *markdown)?)?;
+            }
+            ProofCommands::Verify { pack, device_pub } => {
+                let result = governance::verify_proof_pack(&cli, pack, device_pub.as_deref())?;
+                let ok = result["ok"] == serde_json::Value::Bool(true);
+                print_value(&cli, &result)?;
+                if !ok {
+                    std::process::exit(1);
+                }
             }
         },
         Commands::Doctor => {
@@ -3618,53 +4640,144 @@ async fn run(cli: Cli) -> Result<()> {
             }
         }
         Commands::Hook { command } => match command {
+            #[cfg(debug_assertions)]
+            _ if std::env::var_os("LOCKRAIL_DEBUG_PANIC_HOOK").is_some() => {
+                panic!("debug: forced hook panic");
+            }
             HookCommands::Prompt { prefix, aggressive } => {
                 let input = std::io::read_to_string(std::io::stdin())?;
-                let result = scan_and_seal(&cli, &input, prefix, *aggressive)?;
-                if cli.json {
-                    print_value(&cli, &result)?;
-                } else if let Some(safe) =
-                    result.get("safe_text").and_then(serde_json::Value::as_str)
+                // B8: on a managed machine every hook first checks that this session goes through
+                // the sealer; a launch-env override or a NO_PROXY bypass stops the turn.
+                if lockrail_policy::Paths::system().is_managed()
+                    && let Err(violation) = proxy_check::check_process()
                 {
-                    print!("{safe}");
+                    println!(
+                        "{}",
+                        serde_json::json!({"decision": "block", "reason": violation.reason()})
+                    );
+                    return Ok(());
+                }
+                // D3: a hook cannot edit a prompt. Block it when it carries PHI without a BAA,
+                // or a secret that no sealer will seal on the wire; otherwise let it through.
+                let _ = prefix;
+                let prompt = hooks::prompt_text(&input);
+                // `@` file mentions are read without a PreToolUse event, so the prompt hook is
+                // where a mention of Lockrail's own state is stopped.
+                let user_home = dirs::home_dir().unwrap_or_default();
+                let cwd = serde_json::from_str::<serde_json::Value>(&input)
+                    .ok()
+                    .and_then(|v| v.get("cwd").and_then(|c| c.as_str()).map(PathBuf::from))
+                    .unwrap_or_else(|| user_home.clone());
+                if hooks::prompt_mentions_protected_at(&prompt, &home(&cli), &user_home, &cwd) {
+                    println!(
+                        "{}",
+                        serde_json::json!({"decision": "block", "reason": "lockrail_guard_path: this prompt mentions Lockrail's private state (vault, key or broker socket), which AI tools may not read."})
+                    );
+                    return Ok(());
+                }
+                let mut ctx = hook_context(&cli, *aggressive)?;
+                // The environment says the session goes through the sealer; for a prompt that
+                // carries a secret, prove it: whatever listens on the proxy port must answer the
+                // health challenge with this machine's key. A plain proxy an agent started in
+                // the sealer's place cannot, and the prompt is then blocked (architecture review).
+                if ctx.sealer_active && !hooks::prompt_handles(&prompt, &ctx).is_empty() {
+                    ctx.sealer_active = sealer_verified(&ctx.fp_key);
+                }
+                if let hooks::PromptDecision::Block(reason) = hooks::prompt_decision(&prompt, &ctx)
+                {
+                    let rule = reason.split(':').next().unwrap_or("").to_string();
+                    AuditLog::new(audit_path(&cli)).append(
+                        "hook.prompt.blocked",
+                        "prompt",
+                        serde_json::json!({
+                            "rule": rule,
+                            "handles": dedup_capped(&hooks::prompt_handles(&prompt, &ctx), ledger::MAX_HANDLES_PER_EVENT),
+                        }),
+                    )?;
+                    println!(
+                        "{}",
+                        serde_json::json!({"decision": "block", "reason": reason})
+                    );
                 }
             }
             HookCommands::PostToolUse { prefix, aggressive } => {
                 let input = std::io::read_to_string(std::io::stdin())?;
-                let scan_text_content = text_for_post_tool_use_scan(&input);
-                let findings = scan_text(
-                    &scan_text_content,
-                    ScanOptions {
-                        aggressive: *aggressive,
-                        protection_mode: true,
-                    },
-                );
-                let sealed_count = findings.iter().filter(|f| f.should_seal).count();
-                if sealed_count > 0 {
-                    // Save the sealed secrets to vault
-                    let sealed = seal_text(
-                        &scan_text_content,
-                        SealOptions {
-                            aggressive: *aggressive,
-                            protection_mode: true,
-                        },
-                    );
-                    let mut vault = Vault::open(vault_path(&cli), password(&cli)?)?;
-                    save_sealed_findings(&mut vault, prefix, &sealed.findings)?;
-                    AuditLog::new(audit_path(&cli)).append(
-                        "hook.post_tool_use.blocked",
-                        "tool_output",
-                        serde_json::json!({"count": sealed_count}),
-                    )?;
-                    eprintln!(
-                        "lockrail: blocked {} secret(s) in tool output",
-                        sealed_count
-                    );
-                    // Output the safe version and exit 2 to block Claude from seeing raw secrets
-                    print!("{}", sealed.safe_text);
-                    std::process::exit(2);
+                let _ = POST_TOOL_INPUT.set(input.clone());
+                #[cfg(debug_assertions)]
+                if std::env::var_os("LOCKRAIL_DEBUG_PANIC_POST_TOOL").is_some() {
+                    panic!("debug: forced panic inside PostToolUse");
                 }
-                // No secrets found — pass through (print nothing, exit 0)
+                // Claude Code ignores the output of a hook that exits non-zero and keeps the raw
+                // tool output in context. So this hook never fails: any error withholds every
+                // string of the tool output (same shape, so it is applied) and exits 0
+                // (engineering review blocker 3).
+                match post_tool_use(&cli, &input, prefix, *aggressive) {
+                    Ok(Some(out)) => println!("{out}"),
+                    Ok(None) => {}
+                    Err(error) => {
+                        let reason = format!(
+                            "Lockrail could not scan this tool output ({}), so it was withheld.",
+                            redact_for_logs(&error.to_string())
+                        );
+                        if let Some(out) = hooks::withhold_all(&input, &reason) {
+                            println!("{out}");
+                        }
+                        eprintln!("lockrail: {reason}");
+                    }
+                }
+            }
+            HookCommands::PreToolUse => {
+                let input = std::io::read_to_string(std::io::stdin())?;
+                if lockrail_policy::Paths::system().is_managed()
+                    && let Err(violation) = proxy_check::check_process()
+                {
+                    println!(
+                        "{}",
+                        serde_json::json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": violation.reason()}})
+                    );
+                    return Ok(());
+                }
+                let fp_key = governance::fp_key(&cli)?;
+                let decision = hooks::pre_tool_decision(
+                    &input,
+                    &home(&cli),
+                    &dirs::home_dir().unwrap_or_default(),
+                    &fp_key,
+                    &|| vault_values(&cli).map_err(|e| e.to_string()),
+                );
+                let output = match &decision {
+                    hooks::PreDecision::Pass => None,
+                    hooks::PreDecision::Deny(reason) => Some(serde_json::json!({
+                        "hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason}
+                    })),
+                    hooks::PreDecision::Ask {
+                        reason,
+                        updated_input,
+                    } => Some(serde_json::json!({
+                        "hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "ask", "permissionDecisionReason": reason, "updatedInput": updated_input}
+                    })),
+                };
+                if let Some(output) = output {
+                    let action = if matches!(decision, hooks::PreDecision::Deny(_)) {
+                        "hook.pre_tool_use.denied"
+                    } else {
+                        "hook.pre_tool_use.resolved"
+                    };
+                    // The reason names the rule; no values are logged.
+                    let reason = output["hookSpecificOutput"]["permissionDecisionReason"]
+                        .as_str()
+                        .unwrap_or("")
+                        .split(':')
+                        .next()
+                        .unwrap_or("")
+                        .to_string();
+                    AuditLog::new(audit_path(&cli)).append(
+                        action,
+                        "tool_call",
+                        serde_json::json!({"rule": reason}),
+                    )?;
+                    println!("{output}");
+                }
             }
         },
         Commands::Run { command } => {
@@ -3781,6 +4894,7 @@ async fn run(cli: Cli) -> Result<()> {
                 )?;
             }
             SecretCommands::Export { format, env } => {
+                governance::require_presence(&cli, "export Lockrail secrets as plaintext")?;
                 if !cli.quiet {
                     eprintln!(
                         "lockrail: WARNING — exporting secrets as plaintext. \
@@ -3908,6 +5022,17 @@ async fn run(cli: Cli) -> Result<()> {
                 )?;
                 serve(relay_state(&cli)?, resolved).await?;
             }
+            RelayCommands::Call {
+                agent,
+                capability,
+                method,
+                url,
+                body,
+            } => {
+                let result =
+                    relay_call(&cli, agent, capability, method, url, body.as_deref()).await?;
+                print_value(&cli, &result)?;
+            }
             RelayCommands::Check => {
                 let config = load_config(&cli)?;
                 let url = format!("http://{}/healthz", config.relay_listen);
@@ -3940,6 +5065,12 @@ async fn run(cli: Cli) -> Result<()> {
                 }
             }
         },
+        Commands::Keys { command } => governance::run_keys(&cli, command)?,
+        Commands::Policy { command } => governance::run_policy(&cli, command)?,
+        Commands::Events { command } => governance::run_events(&cli, command)?,
+        Commands::Broker { command } => governance::run_broker(&cli, command)?,
+        Commands::Sealer { command } => governance::run_sealer(&cli, command).await?,
+        Commands::Evidence { command } => governance::run_evidence(&cli, command).await?,
         Commands::Audit { command } => match command {
             AuditCommands::Verify => {
                 let (ok, message) = AuditLog::new(audit_path(&cli)).verify()?;
@@ -3979,6 +5110,10 @@ async fn run(cli: Cli) -> Result<()> {
             }
         },
         Commands::Shell { env } => {
+            governance::require_presence(
+                &cli,
+                "open a shell with Lockrail secrets in its environment",
+            )?;
             // SECURITY WARNING: this command injects vault secrets as plain environment
             // variables into the spawned shell.  Any process running inside that shell
             // — including AI coding tools — can read every secret via `printenv`,
@@ -4000,6 +5135,7 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Commands::Sync { command } => match command {
             SyncCommands::Github { repo, token, env } => {
+                governance::require_presence(&cli, "upload Lockrail secrets to GitHub")?;
                 let resolved_token = token
                     .clone()
                     .or_else(|| std::env::var("GITHUB_TOKEN").ok())
@@ -4024,6 +5160,7 @@ async fn run(cli: Cli) -> Result<()> {
                 token,
                 env,
             } => {
+                governance::require_presence(&cli, "upload Lockrail secrets to Vercel")?;
                 let resolved_token = token
                     .clone()
                     .or_else(|| std::env::var("VERCEL_TOKEN").ok())
@@ -4037,9 +5174,10 @@ async fn run(cli: Cli) -> Result<()> {
                 )?;
             }
             SyncCommands::Dotenv { out, env } => {
+                governance::require_presence(&cli, "write Lockrail secrets to a .env file")?;
                 let vault = Vault::open(vault_path(&cli), password(&cli)?)?;
                 let content = sync::export_dotenv(&vault, env.as_deref());
-                fs::write(out, content.as_bytes())?;
+                write_private_dotenv(out, content.as_bytes())?;
                 print_value(
                     &cli,
                     &serde_json::json!({"out": out, "env": env.as_deref().unwrap_or("default")}),
@@ -4048,6 +5186,10 @@ async fn run(cli: Cli) -> Result<()> {
         },
         Commands::Proxy { command } => match command {
             ProxyCommands::InstallCa => {
+                governance::require_presence(
+                    &cli,
+                    "install the Lockrail proxy certificate authority",
+                )?;
                 let ca_store = if ca_path(&cli).exists() {
                     CaStore::load(&ca_path(&cli))?
                 } else {
@@ -4114,6 +5256,24 @@ async fn run(cli: Cli) -> Result<()> {
                 })
                 .await?;
             }
+            ProxyCommands::UninstallCa => {
+                governance::require_presence(
+                    &cli,
+                    "remove the Lockrail proxy certificate authority",
+                )?;
+                let report = uninstall_ca_system(&proxy_cert_path(&cli))?;
+                let mut removed = Vec::new();
+                for path in [ca_path(&cli), proxy_cert_path(&cli)] {
+                    if path.exists() {
+                        fs::remove_file(&path)?;
+                        removed.push(path);
+                    }
+                }
+                print_value(
+                    &cli,
+                    &serde_json::json!({"trust_store": report, "removed": removed}),
+                )?;
+            }
             ProxyCommands::Status => {
                 let ca_installed = ca_path(&cli).exists();
                 let cert_exported = proxy_cert_path(&cli).exists();
@@ -4144,8 +5304,31 @@ async fn run(cli: Cli) -> Result<()> {
                 print_value(&cli, &result)?;
             }
             AiCommands::Hooks { tool } => {
-                let result = ai_install_hooks(tool.as_deref(), cli.quiet)?;
+                let exe = std::env::current_exe()?.to_string_lossy().to_string();
+                let result = ai_install_hooks(tool.as_deref(), cli.quiet, &exe)?;
                 print_value(&cli, &result)?;
+            }
+            AiCommands::ManagedSettings {
+                binary,
+                org_uuid,
+                disable_file_mentions,
+                managed_hooks_only,
+                hipaa,
+                claude_sandbox,
+                cleanup_days,
+            } => {
+                let settings = managed::claude_managed_settings(&managed::ManagedOptions {
+                    binary,
+                    proxy: proxy_check::EXPECTED_PROXY,
+                    org_uuid: org_uuid.as_deref(),
+                    disable_file_mentions: *disable_file_mentions,
+                    managed_hooks_only: *managed_hooks_only,
+                    hipaa: *hipaa,
+                    claude_sandbox: *claude_sandbox,
+                    cleanup_period_days: *cleanup_days,
+                })
+                .map_err(|e| anyhow!(e))?;
+                println!("{}", serde_json::to_string_pretty(&settings)?);
             }
         },
     }
@@ -4264,8 +5447,22 @@ mod tests {
         })
         .to_string();
 
-        let extracted = text_for_post_tool_use_scan(&input);
-
-        assert!(extracted.contains("sk-proj-demo-abcdefghijklmnopqrstuvwxyz123456"));
+        // The PostToolUse rewriter reaches nested strings and keeps the surrounding structure.
+        let ctx = hooks::Context {
+            sealer_active: true,
+            phi_on: false,
+            baa: false,
+            aggressive: false,
+            fp_key: [1u8; 32],
+        };
+        let (out, report, _) =
+            hooks::tool_output_update(&input, &ctx, &hooks::KnownValues::empty())
+                .expect("rewritten");
+        let updated = &out["hookSpecificOutput"]["updatedToolOutput"];
+        assert_eq!(updated["content"][0]["text"], "safe");
+        let stderr = updated["content"][1]["nested"]["stderr"].as_str().unwrap();
+        assert!(!stderr.contains("sk-proj-demo-abcdefghijklmnopqrstuvwxyz123456"));
+        assert!(stderr.starts_with("OPENAI_API_KEY=lockrail://secret/openai-key/h_"));
+        assert_eq!(report.secrets, 1);
     }
 }

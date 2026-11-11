@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use rcgen::{
-    BasicConstraints, CertificateParams, DistinguishedName, DnType, IsCa, KeyPair, SanType,
+    BasicConstraints, CertificateParams, DistinguishedName, DnType, GeneralSubtree, IsCa, KeyPair,
+    KeyUsagePurpose, NameConstraints, SanType,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -25,7 +26,7 @@ pub struct CaStore {
 impl CaStore {
     pub fn generate() -> Result<Self> {
         let key_pair = KeyPair::generate().context("CA keygen failed")?;
-        let cert = ca_params_for_dn()
+        let cert = new_ca_params()
             .self_signed(&key_pair)
             .context("CA self-sign failed")?;
         Ok(Self {
@@ -71,6 +72,38 @@ impl CaStore {
     pub fn cert_pem(&self) -> &str {
         &self.cert_pem
     }
+}
+
+/// CA validity (D5).
+pub const CA_VALIDITY_DAYS: i64 = 365;
+
+/// Params for a newly generated CA (D5): path length 0 (no sub-CAs), key usage limited to
+/// certificate and CRL signing, DNS name constraints limited to the hosts Lockrail intercepts,
+/// and a 365-day validity. Even if the CA key leaked, it could not mint a trusted certificate
+/// for any other site. A 0.3.7 CA keeps working until `proxy uninstall-ca` + `install-ca`.
+pub fn new_ca_params() -> CertificateParams {
+    let mut params = ca_params_for_dn();
+    params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
+    params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+    params.name_constraints = Some(NameConstraints {
+        permitted_subtrees: {
+            let mut hosts: Vec<&str> = crate::proxy::AI_INTERCEPT_HOSTS.to_vec();
+            for h in crate::sealer::SEALER_MITM_HOSTS {
+                if !hosts.contains(h) {
+                    hosts.push(h);
+                }
+            }
+            hosts
+                .into_iter()
+                .map(|h| GeneralSubtree::DnsName(h.to_string()))
+                .collect()
+        },
+        excluded_subtrees: vec![],
+    });
+    let now = time::OffsetDateTime::now_utc();
+    params.not_before = now - time::Duration::days(1);
+    params.not_after = now + time::Duration::days(CA_VALIDITY_DAYS);
+    params
 }
 
 /// Returns consistent CA cert params (same Subject DN used for both generation and reconstruction).
@@ -140,6 +173,7 @@ impl LocalCa {
 pub struct DynamicCertResolver {
     ca: Arc<LocalCa>,
     cache: Mutex<HashMap<String, Arc<CertifiedKey>>>,
+    generated: std::sync::atomic::AtomicUsize,
 }
 
 impl DynamicCertResolver {
@@ -147,13 +181,25 @@ impl DynamicCertResolver {
         Self {
             ca,
             cache: Mutex::new(HashMap::new()),
+            generated: std::sync::atomic::AtomicUsize::new(0),
         }
+    }
+
+    /// Leaf keys generated so far (D14: one per host for a shared resolver).
+    pub fn generated(&self) -> usize {
+        self.generated.load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
 impl ResolvesServerCert for DynamicCertResolver {
     fn resolve(&self, client_hello: rustls::server::ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
         let name = client_hello.server_name()?.to_string();
+        // C7: leaves only for the hosts Lockrail intercepts; the cache cannot grow per SNI.
+        let known = crate::proxy::AI_INTERCEPT_HOSTS.contains(&name.as_str())
+            || crate::sealer::SEALER_MITM_HOSTS.contains(&name.as_str());
+        if !known {
+            return None;
+        }
         {
             let cache = self.cache.lock().ok()?;
             if let Some(key) = cache.get(&name) {
@@ -161,9 +207,58 @@ impl ResolvesServerCert for DynamicCertResolver {
             }
         }
         let ck = self.ca.sign_for_host(&name).ok()?;
+        self.generated
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if let Ok(mut cache) = self.cache.lock() {
             cache.insert(name, ck.clone());
         }
         Some(ck)
+    }
+}
+
+#[cfg(test)]
+mod d5_tests {
+    use super::*;
+
+    /// GATE 4 (D5): name constraints present, validity within 366 days.
+    #[test]
+    fn new_ca_is_name_constrained_and_short_lived() {
+        let store = CaStore::generate().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let pem = tmp.path().join("ca.pem");
+        std::fs::write(&pem, store.cert_pem()).unwrap();
+        let out = std::process::Command::new("openssl")
+            .args(["x509", "-noout", "-text", "-in"])
+            .arg(&pem)
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(text.contains("Name Constraints"), "{text}");
+        assert!(text.contains("DNS:api.anthropic.com"), "{text}");
+        assert!(text.contains("pathlen:0"), "{text}");
+        let end = std::process::Command::new("openssl")
+            .args([
+                "x509",
+                "-noout",
+                "-checkend",
+                &(366 * 24 * 3600).to_string(),
+                "-in",
+            ])
+            .arg(&pem)
+            .output()
+            .unwrap();
+        assert!(!end.status.success(), "CA valid for more than 366 days");
+        let ok_now = std::process::Command::new("openssl")
+            .args([
+                "x509",
+                "-noout",
+                "-checkend",
+                &(364 * 24 * 3600).to_string(),
+                "-in",
+            ])
+            .arg(&pem)
+            .output()
+            .unwrap();
+        assert!(ok_now.status.success(), "CA expires within 364 days");
     }
 }

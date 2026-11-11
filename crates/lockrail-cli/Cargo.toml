@@ -35,15 +35,24 @@ axum = { workspace = true }
 portable-pty = { workspace = true }
 uuid = { workspace = true }
 time = { workspace = true }
-lockrail-protocol = { version = "0.3.7", path = "../lockrail-protocol" }
-lockrail-vault = { version = "0.3.7", path = "../lockrail-vault" }
-lockrail-audit = { version = "0.3.7", path = "../lockrail-audit" }
-lockrail-relay = { version = "0.3.7", path = "../lockrail-relay" }
-lockrail-proxy = { version = "0.3.7", path = "../lockrail-proxy" }
+lockrail-protocol = { version = "0.4.0", path = "../lockrail-protocol" }
+lockrail-vault = { version = "0.4.0", path = "../lockrail-vault" }
+lockrail-audit = { version = "0.4.0", path = "../lockrail-audit" }
+lockrail-relay = { version = "0.4.0", path = "../lockrail-relay" }
+lockrail-proxy = { version = "0.4.0", path = "../lockrail-proxy" }
+lockrail-keys = { version = "0.4.0", path = "../lockrail-keys" }
+lockrail-policy = { version = "0.4.0", path = "../lockrail-policy" }
+lockrail-engine = { version = "0.4.0", path = "../lockrail-engine" }
+lockrail-broker = { version = "0.4.0", path = "../lockrail-broker" }
+zeroize = { workspace = true }
+ed25519-dalek = { workspace = true }
+sha2 = { workspace = true }
+aho-corasick = "1"
 base64ct = { workspace = true }
 crypto_box = { version = "0.9", features = ["seal"] }
 rand_core = { workspace = true }
 hex = { workspace = true }
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = { workspace = true }

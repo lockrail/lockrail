@@ -106,7 +106,9 @@ fn oss_temp_home_end_to_end() {
 
     let seal = piped_json(home, password, &["seal"], &format!("Use {raw_secret}\n"));
     let safe_text = seal["safe_text"].as_str().expect("safe_text");
-    assert!(safe_text.contains("lockrail://secret/openai-key/fp_"));
+    // Phase 3D (D6): handles carry a keyed fingerprint (`h_` + HMAC); 0.3.7 `fp_` handles still
+    // resolve through the legacy index (tests/handle_flow.rs).
+    assert!(safe_text.contains("lockrail://secret/openai-key/h_"));
     assert!(!safe_text.contains(raw_secret));
 
     let fingerprint = seal["findings"][0]["fingerprint"]
@@ -135,7 +137,13 @@ fn oss_temp_home_end_to_end() {
             .output()
             .expect("secret show"),
     );
-    assert_eq!(metadata["fingerprint"], fingerprint);
+    // The handle carries the keyed fingerprint (D6); the vault metadata keeps the unkeyed 0.3.7
+    // fingerprint, which is the legacy index that old `fp_` handles resolve through.
+    assert!(fingerprint.starts_with("h_"));
+    assert_eq!(
+        metadata["fingerprint"],
+        lockrail_engine::seal::fingerprint(raw_secret)
+    );
 
     let agent = json_output(
         lockrail_cmd(home, password)

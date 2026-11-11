@@ -31,14 +31,14 @@ No cloud. No account. Single binary. Source-available for noncommercial use.
 
 - **Two interception modes** — PTY shim (wraps any CLI tool) or conservative HTTPS proxy (`lockrail proxy`, port 8789)
 - **30+ detection patterns** — OpenAI, Anthropic, AWS, GCP, GitHub, npm, PyPI, HuggingFace, JWT, private keys, high-entropy strings
-- **Opaque handle round-trip** — `lockrail://secret/<name>/<fp>` replaces plaintext; model cannot reconstruct the original
+- **Keyed handle round-trip** — `lockrail://secret/<kind>/h_<HMAC>` replaces plaintext; a handle confirms nothing without this machine's key, and a value is restored only into the file that already holds it
 - **Local encrypted vault** — AES-256-GCM + Argon2id KDF (19,456 KiB, 2 iterations), file perms 0600, atomic writes with fsync
-- **LRAP capability tokens** — Ed25519-signed, time-bound, max-use enforced, replayed tokens rejected
+- **LRAP capability tokens** — Ed25519-signed, time-bound and max-use enforced; replayed proofs are rejected for agent-bound tokens (unbound bearer tokens are limited by expiry and max-use)
 - **SSRF + DNS rebinding protection** — relay blocks localhost, link-local, metadata endpoints, and rebinding attempts
-- **Hash-chained audit log** — SHA-256 chained events with signed receipts; `lockrail audit verify` detects any tampering
-- **Claude Code hooks** — UserPromptSubmit and PostToolUse hooks block secrets entering and leaving the model
+- **Tamper-evident logs** — an HMAC-chained event log anchored to signed digests; tampering is detectable back to the last shipped anchor (`lockrail events verify`)
+- **Claude Code hooks** — prompts carrying a secret are blocked unless the verified sealer will seal them; tool output is sealed before the model sees it; PreToolUse guards Lockrail's own state
 - **Works offline** — vault, relay, and proxy all run locally; no Lockrail cloud required
-- **Supports** Claude Code · Codex · Cursor · Antigravity · any MCP server
+- **Supports** Claude Code (hooks + sealer, set up by `./install.sh`); Codex, Gemini CLI and OpenAI-compatible clients through the sealer when routed through it. Live end-to-end runs are pending (see `docs/LIMITATIONS.md`)
 - **Source-available license** — noncommercial use is allowed; commercial, SaaS, managed service, resale, or competing product use requires a written commercial license
 
 ## Install
@@ -180,7 +180,7 @@ What happens internally:
 
 | Step | What Lockrail does | Security control |
 |---|---|---|
-| Install | Downloads the release binary, verifies SHA-256 when available, then runs setup | No Rust toolchain or Cargo dependency stream for normal users |
+| Install | From a checkout, `./install.sh` builds with your Rust toolchain and runs `lockrail install`; release downloads require a SHA-256 match and a minisign signature and refuse otherwise | One command; `./install.sh --uninstall` restores every setting |
 | Setup | Generates a random local vault key and local agent identity | `~/.lockrail/vault.key`, private file permissions |
 | Intercept | Shim receives terminal input before the AI tool | Model does not get first look at pasted text |
 | Detect | Scans for 30+ provider formats, private keys, JWTs, and high-entropy strings | Pattern matching + Shannon entropy checks |
@@ -256,7 +256,7 @@ only applies to traffic Lockrail actually intercepts.
 |---|---|
 | `lockrail audit list` | Show recent audit events |
 | `lockrail audit verify` | Verify the SHA-256 hash chain — detect any tampering |
-| `lockrail proof pack` | Export a signed compliance bundle (zip + manifest) |
+| `lockrail proof pack` | Export a JSON evidence pack with a device-signed `.sig.json`; `lockrail proof verify` checks it |
 
 </details>
 
@@ -277,24 +277,28 @@ only applies to traffic Lockrail actually intercepts.
 | Terminal stdin | Scanned and sealed before the AI tool sees it |
 | `.env` files | Handle-based sealing — safe for agent inspection |
 | Tool output / responses | PostToolUse hook scans before the model incorporates it |
-| Supported AI API HTTPS hosts (proxy mode) | Scans uncompressed textual/JSON request and response bodies; streams, compressed bodies, and unknown binary content pass through unchanged |
+| Supported AI API HTTPS hosts (sealer) | Seals request bodies (gzip, deflate, br and zstd decoded) for Anthropic Messages, OpenAI Responses, OpenAI-compatible chat completions and Gemini; streaming responses are not rewritten |
 | Relay calls | LRAP token check · SSRF block · replay detection · usage cap |
 | Audit log | SHA-256 hash chain · signed receipts · tamper detection |
 
-**Not covered:** GUI flows outside the proxy, clipboard capture, keyloggers, compressed or streaming proxy bodies that cannot be safely rewritten, unsupported AI API hosts, or a fully compromised host while the vault is unlocked.
+**Not covered:** GUI flows outside the proxy, clipboard capture, keyloggers, streaming responses, unsupported AI API hosts, or a fully compromised host while the vault is unlocked.
 
 ## Comparison
 
-| | Lockrail | ggshield ai-hook | Infisical Agent Vault | Doppler / Phase |
-|---|:---:|:---:|:---:|:---:|
-| Intercepts AI prompt context | ✓ | 4 tools | — | — |
-| HTTPS proxy for supported AI hosts | ✓ | — | — | — |
-| Opaque handle round-trip | ✓ | — | — | — |
-| Local vault, no server required | ✓ | — | — | — |
-| No account or cloud dependency | ✓ | — | — | — |
-| SSRF + DNS rebinding protection | ✓ | — | partial | — |
-| Signed audit receipts | ✓ | — | — | — |
-| Post-response secret scanning | ✓ | notify only | — | — |
+Measured, not marketing. Secret recall on three blind held-out corpora (each case scored by value
+overlap; corpora written by an agent that never saw the detector code):
+
+| Corpus | Lockrail | gitleaks 8.30.1 |
+|---|---|---|
+| held-out v1 | 297/297 | 196/292 |
+| held-out v2 | 288/288 | 224/288 |
+| held-out v3 | 467/468 | 374/468 |
+
+Lockrail's benign false-positive rate on these corpora is 0/1089 after fixes tuned on them, so
+it is not a blind result; a fresh blind round is pending. Reversible placeholders also exist in
+small open-source proxies (for example Waterwall), which restore values into model responses;
+Lockrail restores a value only into the file that already holds it or into a child process via
+`lockrail env run`, never into model output.
 
 ## Cryptography
 
@@ -305,7 +309,7 @@ only applies to traffic Lockrail actually intercepts.
 - **Sync encryption:** X25519 sealed-box for GitHub Actions secret push
 - **Proxy TLS:** rcgen-generated local CA; rustls with ring backend
 
-All cryptographic material stays on disk at `~/.lockrail/` with 0600 permissions. No keys leave the machine.
+All cryptographic material stays on this machine (`~/.lockrail/` with 0600 permissions, or the Keychain on managed Macs). No keys or secret values leave the machine; evidence digests carry counters only.
 
 ## Building from source
 

@@ -31,6 +31,55 @@ fn sanitize_env_key(name: &str) -> String {
     key
 }
 
+/// Environment variables a secret may never set in a child process (D18). Overriding them lets a
+/// stored "secret" hijack what the child executes or loads (`PATH`, `DYLD_INSERT_LIBRARIES`,
+/// `NODE_OPTIONS=--require ...`) instead of just carrying a value.
+const RESERVED_ENV_NAMES: &[&str] = &[
+    "PATH",
+    "HOME",
+    "SHELL",
+    "USER",
+    "LOGNAME",
+    "TMPDIR",
+    "PWD",
+    "IFS",
+    "ENV",
+    "BASH_ENV",
+    "ZDOTDIR",
+    "NODE_OPTIONS",
+    "NODE_PATH",
+    "PYTHONPATH",
+    "PYTHONHOME",
+    "PYTHONSTARTUP",
+    "RUBYOPT",
+    "RUBYLIB",
+    "PERL5LIB",
+    "PERL5OPT",
+    "JAVA_TOOL_OPTIONS",
+    "GIT_SSH_COMMAND",
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+];
+const RESERVED_ENV_PREFIXES: &[&str] = &["DYLD_", "LD_", "LOCKRAIL_"];
+
+/// Refuse any env key that would override a reserved variable (case-insensitive, because some
+/// tools also honour the lowercase forms such as `https_proxy`).
+pub fn check_reserved_env_names<'a>(keys: impl IntoIterator<Item = &'a String>) -> Result<()> {
+    for key in keys {
+        let upper = key.to_ascii_uppercase();
+        if RESERVED_ENV_NAMES.contains(&upper.as_str())
+            || RESERVED_ENV_PREFIXES.iter().any(|p| upper.starts_with(p))
+        {
+            anyhow::bail!(
+                "reserved_env_name: refusing to set {key} from a secret; rename the secret"
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Build a map of env-var-safe key → secret value for all secrets in an environment.
 ///
 /// Secrets are matched by the tag `"env:<environment>"` where `environment` is the
@@ -73,6 +122,7 @@ pub fn run_injected(vault: &Vault, environment: Option<&str>, command: &[String]
         .context("command must have at least one element")?;
 
     let env_map = build_env_map(vault, environment);
+    check_reserved_env_names(env_map.keys())?;
 
     let status = Command::new(executable)
         .args(&command[1..])
@@ -87,6 +137,40 @@ pub fn run_injected(vault: &Vault, environment: Option<&str>, command: &[String]
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reserved_env_names_are_refused() {
+        for name in [
+            "PATH",
+            "path",
+            "DYLD_INSERT_LIBRARIES",
+            "LD_PRELOAD",
+            "NODE_OPTIONS",
+            "https_proxy",
+            "LOCKRAIL_PASSWORD",
+        ] {
+            let keys = [name.to_string()];
+            let err = check_reserved_env_names(keys.iter()).unwrap_err();
+            assert!(err.to_string().contains("reserved_env_name"), "{name}");
+        }
+        let ok = ["OPENAI_API_KEY".to_string(), "DATABASE_URL".to_string()];
+        check_reserved_env_names(ok.iter()).unwrap();
+    }
+
+    #[test]
+    fn run_injected_refuses_secret_named_path() {
+        use lockrail_vault::{KdfParamsDoc, Vault};
+        use secrecy::SecretString;
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("vault.lockrail");
+        let mut vault =
+            Vault::init(&path, SecretString::from("pw"), KdfParamsDoc::test_fast()).unwrap();
+        vault
+            .set_secret("path".into(), "/tmp/evil".into(), "default", vec![])
+            .unwrap();
+        let err = run_injected(&vault, None, &["true".to_string()]).unwrap_err();
+        assert!(err.to_string().contains("reserved_env_name"));
+    }
 
     #[test]
     fn sanitize_basic() {

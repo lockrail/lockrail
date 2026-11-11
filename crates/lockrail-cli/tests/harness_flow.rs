@@ -340,3 +340,124 @@ fn env_pipe_and_harness_commands_work() {
 
     assert_secret_absent(home, "sk-proj-demo-abcdefghijklmnopqrstuvwxyz123456");
 }
+
+/// Phase 1A, revised: a prompt hook that panics exits 2 (blocks the prompt); PostToolUse never
+/// leaves the raw output in place (it seals or withholds, then exits 0).
+#[test]
+fn hook_errors_and_panics_fail_closed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("no-vault-here");
+    let input = r#"{"tool_name":"Bash","tool_response":{"stdout":"OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz0123456789"}}"#;
+
+    // Error path: secret found, but the vault cannot be opened.
+    let mut child = lockrail_cmd(&home, "pw")
+        .args(["hook", "post-tool-use"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    // PostToolUse runs after the tool: exit 2 only shows stderr to Claude while the raw output
+    // stays in context, so failing "closed" there means replacing the output, not exiting 2.
+    // The hook seals (or, on an internal error, withholds) and exits 0.
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("updatedToolOutput"), "{stdout}");
+    assert!(
+        !stdout.contains("sk-proj-abcdefghijklmnopqrstuvwxyz0123456789"),
+        "{stdout}"
+    );
+
+    // Panic path (debug-only trigger): UserPromptSubmit exit 2 does block the prompt.
+    let mut child = lockrail_cmd(&home, "pw")
+        .args(["hook", "prompt"])
+        .env("LOCKRAIL_DEBUG_PANIC_HOOK", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"hello").unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn env_run_injects_the_sealed_value() {
+    // D23: the vault records the handle namespace (`env`) as `kind`, and the resolver demanded
+    // `kind == "openai-key"`, so `env run` passed the handle string to the child instead of the
+    // value. The existing env test could not see it: `env run` re-seals stdout for display.
+    let temp_home = tempfile::tempdir().expect("temp home");
+    let home = temp_home.path();
+    let temp_files = tempfile::tempdir().expect("temp files");
+    let password = "demo-password";
+    let value = ["sk-proj-", "flows-aB3dE5fG7hJ9kL1m", "N3pQ5rS7tU9vW1xY"].concat();
+
+    json_output(
+        lockrail_cmd(home, password)
+            .args(["init", "--yes", "--json"])
+            .output()
+            .expect("init"),
+    );
+    let env_path = temp_files.path().join(".env");
+    fs::write(&env_path, format!("OPENAI_API_KEY={value}\nMODE=dev\n")).expect("write env");
+    let sealed_path = temp_files.path().join(".env.lockrail");
+    json_output(
+        lockrail_cmd(home, password)
+            .args([
+                "env",
+                "seal",
+                env_path.to_str().expect("path"),
+                "--out",
+                sealed_path.to_str().expect("path"),
+                "--json",
+            ])
+            .output()
+            .expect("env seal"),
+    );
+    let sealed_text = fs::read_to_string(&sealed_path).expect("sealed file");
+    assert!(
+        !sealed_text.contains(&value),
+        "raw value written to .env.lockrail"
+    );
+
+    let check = format!("test \"$OPENAI_API_KEY\" = '{value}' && echo resolved || echo unresolved");
+    let env_run = json_output(
+        lockrail_cmd(home, password)
+            .args([
+                "--json",
+                "env",
+                "run",
+                "--file",
+                sealed_path.to_str().expect("path"),
+                "--",
+                "sh",
+                "-c",
+                &check,
+            ])
+            .output()
+            .expect("env run"),
+    );
+    assert_eq!(
+        env_run["stdout"].as_str().expect("stdout").trim(),
+        "resolved",
+        "env run did not inject the sealed value: {env_run}"
+    );
+}

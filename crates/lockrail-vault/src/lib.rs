@@ -52,6 +52,31 @@ pub enum VaultError {
     Revoked,
     #[error("protocol: {0}")]
     Protocol(#[from] lockrail_protocol::ProtocolError),
+    #[error("kdf_params_out_of_range: the vault file asks for KDF parameters outside safe limits")]
+    KdfParamsOutOfRange,
+}
+
+/// Upper bounds for KDF parameters read from a vault file (D13). A crafted file must not be able
+/// to make `open` allocate unbounded memory or spin for minutes.
+pub const MAX_KDF_MEMORY_KIB: u32 = 1_048_576;
+pub const MAX_KDF_ITERATIONS: u32 = 10;
+pub const MAX_KDF_PARALLELISM: u32 = 8;
+
+impl KdfParamsDoc {
+    /// Reject parameters outside safe limits before any derivation runs.
+    pub fn check_bounds(&self) -> Result<()> {
+        if self.memory_kib == 0
+            || self.memory_kib > MAX_KDF_MEMORY_KIB
+            || self.iterations == 0
+            || self.iterations > MAX_KDF_ITERATIONS
+            || self.parallelism == 0
+            || self.parallelism > MAX_KDF_PARALLELISM
+            || self.output_len != 32
+        {
+            return Err(VaultError::KdfParamsOutOfRange);
+        }
+        Ok(())
+    }
 }
 
 pub type Result<T> = std::result::Result<T, VaultError>;
@@ -418,44 +443,45 @@ impl Vault {
             return Err(VaultError::Missing);
         }
         let _lock = lock_file(&path)?;
-        let env: VaultEnvelope = serde_json::from_slice(&fs::read(&path)?)?;
-        let salt = Base64UrlUnpadded::decode_vec(&env.salt).map_err(|_| VaultError::Crypto)?;
-        let nonce_bytes =
-            Base64UrlUnpadded::decode_vec(&env.nonce).map_err(|_| VaultError::Crypto)?;
-        let ciphertext =
-            Base64UrlUnpadded::decode_vec(&env.ciphertext).map_err(|_| VaultError::Crypto)?;
-        let mut key = derive_key(&password, &salt, &env.kdf)?;
-        let cipher = Aes256Gcm::new_from_slice(&key).map_err(|_| VaultError::Crypto)?;
-        let aad = serde_json::to_vec(
-            &serde_json::json!({ "version": env.version, "kdf": env.kdf, "salt": env.salt }),
-        )?;
-        let mut plaintext = cipher
-            .decrypt(
-                Nonce::from_slice(&nonce_bytes),
-                aes_gcm::aead::Payload {
-                    msg: &ciphertext,
-                    aad: &aad,
-                },
-            )
-            .map_err(|_| VaultError::WrongPassword)?;
-        key.zeroize();
-        let raw: serde_json::Value = serde_json::from_slice(&plaintext)?;
-        let data = match env.version {
-            1 => legacy_to_v2(raw),
-            2 => serde_json::from_value(raw)?,
-            other => return Err(VaultError::Version(other)),
-        };
-        plaintext.zeroize();
+        let (kdf, data) = read_vault_unlocked(&path, &password)?;
         Ok(Self {
             path,
             password,
-            kdf: env.kdf,
+            kdf,
             data,
         })
     }
 
+    /// Run one mutation as a transaction: take the file lock, reload the vault from disk, apply
+    /// `f`, write, release. Concurrent writers (another CLI process, a long-running relay) can no
+    /// longer overwrite each other's changes with a stale in-memory copy (D1).
+    fn transact<T>(&mut self, f: impl FnOnce(&mut VaultData) -> Result<T>) -> Result<T> {
+        let _lock = lock_file(&self.path)?;
+        if self.path.exists() {
+            let (kdf, data) = read_vault_unlocked(&self.path, &self.password)?;
+            self.kdf = kdf;
+            self.data = data;
+        }
+        let out = f(&mut self.data)?;
+        self.write_unlocked()?;
+        Ok(out)
+    }
+
+    /// Reload the in-memory copy from disk under the lock, without writing.
+    pub fn reload(&mut self) -> Result<()> {
+        let _lock = lock_file(&self.path)?;
+        let (kdf, data) = read_vault_unlocked(&self.path, &self.password)?;
+        self.kdf = kdf;
+        self.data = data;
+        Ok(())
+    }
+
     pub fn save(&self) -> Result<()> {
         let _lock = lock_file(&self.path)?;
+        self.write_unlocked()
+    }
+
+    fn write_unlocked(&self) -> Result<()> {
         let mut salt = [0u8; 16];
         let mut nonce = [0u8; 12];
         OsRng.fill_bytes(&mut salt);
@@ -487,49 +513,87 @@ impl Vault {
         key.zeroize();
         write_private_atomic(&self.path, &serde_json::to_vec_pretty(&env)?)
     }
+}
 
+fn read_vault_unlocked(path: &Path, password: &SecretString) -> Result<(KdfParamsDoc, VaultData)> {
+    {
+        let env: VaultEnvelope = serde_json::from_slice(&fs::read(path)?)?;
+        env.kdf.check_bounds()?;
+        let salt = Base64UrlUnpadded::decode_vec(&env.salt).map_err(|_| VaultError::Crypto)?;
+        let nonce_bytes =
+            Base64UrlUnpadded::decode_vec(&env.nonce).map_err(|_| VaultError::Crypto)?;
+        let ciphertext =
+            Base64UrlUnpadded::decode_vec(&env.ciphertext).map_err(|_| VaultError::Crypto)?;
+        let mut key = derive_key(password, &salt, &env.kdf)?;
+        let cipher = Aes256Gcm::new_from_slice(&key).map_err(|_| VaultError::Crypto)?;
+        let aad = serde_json::to_vec(
+            &serde_json::json!({ "version": env.version, "kdf": env.kdf, "salt": env.salt }),
+        )?;
+        let mut plaintext = cipher
+            .decrypt(
+                Nonce::from_slice(&nonce_bytes),
+                aes_gcm::aead::Payload {
+                    msg: &ciphertext,
+                    aad: &aad,
+                },
+            )
+            .map_err(|_| VaultError::WrongPassword)?;
+        key.zeroize();
+        let raw: std::result::Result<serde_json::Value, _> = serde_json::from_slice(&plaintext);
+        plaintext.zeroize();
+        let raw = raw?;
+        let data = match env.version {
+            1 => legacy_to_v2(raw),
+            2 => serde_json::from_value(raw)?,
+            other => return Err(VaultError::Version(other)),
+        };
+        Ok((env.kdf, data))
+    }
+}
+
+impl Vault {
     pub fn add_key(&mut self, name: String, value: String) -> Result<()> {
         validate_name(&name)?;
-        if self.data.keys.contains_key(&name) {
-            return Err(VaultError::CredentialExists);
+        self.transact(|data| {
+            if data.keys.contains_key(&name) {
+                return Err(VaultError::CredentialExists);
+            }
+            let metadata = secret_metadata(&name, &value, Vec::new());
+            data.keys.insert(name, SecretRecord { value, metadata });
+            Ok(())
+        })
+    }
+
+    /// Add many keys in one transaction (one KDF, one write), skipping names already present.
+    /// Hooks call this so a burst of findings costs one vault write, not one per finding.
+    pub fn add_keys_if_absent(&mut self, items: Vec<(String, String)>) -> Result<usize> {
+        for (name, _) in &items {
+            validate_name(name)?;
         }
-        self.data.keys.insert(
-            name.clone(),
-            SecretRecord {
-                value: value.clone(),
-                metadata: secret_metadata(&name, &value, Vec::new()),
-            },
-        );
-        self.save()
+        self.transact(|data| {
+            let mut added = 0;
+            for (name, value) in items {
+                if data.keys.contains_key(&name) {
+                    continue;
+                }
+                let metadata = secret_metadata(&name, &value, Vec::new());
+                data.keys.insert(name, SecretRecord { value, metadata });
+                added += 1;
+            }
+            Ok(added)
+        })
     }
 
     pub fn upsert_key(&mut self, name: String, value: String, tags: Vec<String>) -> Result<()> {
         validate_name(&name)?;
-        let now = now_unix();
-        let created_at = self
-            .data
-            .keys
-            .get(&name)
-            .map(|record| record.metadata.created_at)
-            .unwrap_or(now);
-        self.data.keys.insert(
-            name.clone(),
-            SecretRecord {
-                value: value.clone(),
-                metadata: SecretMetadata {
-                    created_at,
-                    updated_at: now,
-                    ..secret_metadata(&name, &value, tags)
-                },
-            },
-        );
-        self.save()
+        self.transact(|data| {
+            upsert_record(data, name, value, tags);
+            Ok(())
+        })
     }
 
     pub fn remove_key(&mut self, name: &str) -> Result<bool> {
-        let existed = self.data.keys.remove(name).is_some();
-        self.save()?;
-        Ok(existed)
+        self.transact(|data| Ok(data.keys.remove(name).is_some()))
     }
 
     pub fn list_secret_metadata(&self) -> Vec<SecretMetadata> {
@@ -549,17 +613,16 @@ impl Vault {
     }
 
     pub fn use_key(&mut self, name: &str) -> Result<String> {
-        let record = self
-            .data
-            .keys
-            .get_mut(name)
-            .ok_or(VaultError::MissingCredential)?;
-        let now = now_unix();
-        record.metadata.last_used_at = Some(now);
-        record.metadata.updated_at = now;
-        let value = record.value.clone();
-        self.save()?;
-        Ok(value)
+        self.transact(|data| {
+            let record = data
+                .keys
+                .get_mut(name)
+                .ok_or(VaultError::MissingCredential)?;
+            let now = now_unix();
+            record.metadata.last_used_at = Some(now);
+            record.metadata.updated_at = now;
+            Ok(record.value.clone())
+        })
     }
 
     pub fn signing_key(&self) -> Result<SigningKey> {
@@ -573,8 +636,10 @@ impl Vault {
     }
 
     pub fn revoke(&mut self, cap_id: uuid::Uuid) -> Result<()> {
-        self.data.revoked_capabilities.insert(cap_id);
-        self.save()
+        self.transact(|data| {
+            data.revoked_capabilities.insert(cap_id);
+            Ok(())
+        })
     }
 
     pub fn revoked_list(&self) -> Vec<uuid::Uuid> {
@@ -582,49 +647,63 @@ impl Vault {
     }
 
     pub fn record_use(&mut self, cap_id: uuid::Uuid, max_uses: Option<u64>) -> Result<u64> {
-        let current = *self.data.capability_usage.get(&cap_id).unwrap_or(&0);
-        if let Some(max) = max_uses
-            && current >= max
-        {
-            return Err(VaultError::UsageLimitExceeded);
-        }
-        let next = current + 1;
-        self.data.capability_usage.insert(cap_id, next);
-        self.save()?;
-        Ok(next)
+        self.transact(|data| {
+            let current = *data.capability_usage.get(&cap_id).unwrap_or(&0);
+            if let Some(max) = max_uses
+                && current >= max
+            {
+                return Err(VaultError::UsageLimitExceeded);
+            }
+            let next = current + 1;
+            data.capability_usage.insert(cap_id, next);
+            Ok(next)
+        })
     }
 
     pub fn save_agent(&mut self, doc: &AgentKeypairDoc, dir: impl AsRef<Path>) -> Result<()> {
         validate_name(&doc.name)?;
         let public = doc.public_view();
-        self.upsert_key(
-            format!("{AGENT_SECRET_PREFIX}{}", public.agent_id),
-            doc.private_key.clone(),
-            vec!["agent".to_string(), public.kind.clone()],
-        )?;
-        self.data.agents.insert(
-            public.agent_id.clone(),
-            AgentRecord {
-                public: public.clone(),
-                updated_at: now_unix(),
-                revoked: false,
-            },
-        );
-        self.save()?;
+        self.transact(|data| {
+            upsert_record(
+                data,
+                format!("{AGENT_SECRET_PREFIX}{}", public.agent_id),
+                doc.private_key.clone(),
+                vec!["agent".to_string(), public.kind.clone()],
+            );
+            data.agents.insert(
+                public.agent_id.clone(),
+                AgentRecord {
+                    public: public.clone(),
+                    updated_at: now_unix(),
+                    revoked: false,
+                },
+            );
+            Ok(())
+        })?;
         write_public_agent_doc(&public, dir)
     }
 
     pub fn load_agent(&mut self, agent_id: &str) -> Result<AgentKeypairDoc> {
-        let record = self
-            .data
-            .agents
-            .get(agent_id)
-            .cloned()
-            .ok_or(VaultError::MissingCredential)?;
-        if record.revoked || self.data.revoked_agents.contains(agent_id) {
-            return Err(VaultError::Revoked);
-        }
-        let private_key = self.use_key(&format!("{AGENT_SECRET_PREFIX}{agent_id}"))?;
+        // Revocation is checked against the on-disk state inside the transaction, so an agent
+        // revoked by another process after this vault was opened is refused.
+        let (record, private_key) = self.transact(|data| {
+            let record = data
+                .agents
+                .get(agent_id)
+                .cloned()
+                .ok_or(VaultError::MissingCredential)?;
+            if record.revoked || data.revoked_agents.contains(agent_id) {
+                return Err(VaultError::Revoked);
+            }
+            let key_record = data
+                .keys
+                .get_mut(&format!("{AGENT_SECRET_PREFIX}{agent_id}"))
+                .ok_or(VaultError::MissingCredential)?;
+            let now = now_unix();
+            key_record.metadata.last_used_at = Some(now);
+            key_record.metadata.updated_at = now;
+            Ok((record, key_record.value.clone()))
+        })?;
         Ok(AgentKeypairDoc {
             version: record.public.version,
             agent_id: record.public.agent_id.clone(),
@@ -659,15 +738,16 @@ impl Vault {
     }
 
     pub fn revoke_agent(&mut self, agent_id: &str, dir: impl AsRef<Path>) -> Result<()> {
-        let record = self
-            .data
-            .agents
-            .get_mut(agent_id)
-            .ok_or(VaultError::MissingCredential)?;
-        record.revoked = true;
-        let mut public = record.public.clone();
-        self.data.revoked_agents.insert(agent_id.to_string());
-        self.save()?;
+        let mut public = self.transact(|data| {
+            let record = data
+                .agents
+                .get_mut(agent_id)
+                .ok_or(VaultError::MissingCredential)?;
+            record.revoked = true;
+            let public = record.public.clone();
+            data.revoked_agents.insert(agent_id.to_string());
+            Ok(public)
+        })?;
         public.revoked = true;
         write_public_agent_doc(&public, dir)
     }
@@ -686,25 +766,10 @@ impl Vault {
         if !tags.contains(&env_tag) {
             tags.push(env_tag);
         }
-        let now = now_unix();
-        let created_at = self
-            .data
-            .keys
-            .get(&name)
-            .map(|r| r.metadata.created_at)
-            .unwrap_or(now);
-        self.data.keys.insert(
-            name.clone(),
-            SecretRecord {
-                value: value.clone(),
-                metadata: SecretMetadata {
-                    created_at,
-                    updated_at: now,
-                    ..secret_metadata(&name, &value, tags)
-                },
-            },
-        );
-        self.save()
+        self.transact(|data| {
+            upsert_record(data, name, value, tags);
+            Ok(())
+        })
     }
 
     /// Return all secrets for a given environment (None = all secrets).
@@ -741,6 +806,22 @@ impl Vault {
     }
 }
 
+/// Insert or replace a secret, keeping its original `created_at`.
+fn upsert_record(data: &mut VaultData, name: String, value: String, tags: Vec<String>) {
+    let now = now_unix();
+    let created_at = data
+        .keys
+        .get(&name)
+        .map(|record| record.metadata.created_at)
+        .unwrap_or(now);
+    let metadata = SecretMetadata {
+        created_at,
+        updated_at: now,
+        ..secret_metadata(&name, &value, tags)
+    };
+    data.keys.insert(name, SecretRecord { value, metadata });
+}
+
 fn write_public_agent_doc(public: &AgentPublicDoc, dir: impl AsRef<Path>) -> Result<()> {
     let path = dir.as_ref().join(format!("{}.agent.json", public.agent_id));
     write_private_atomic(&path, &serde_json::to_vec_pretty(public)?)
@@ -771,6 +852,78 @@ pub fn public_agent_docs(dir: impl AsRef<Path>) -> Result<Vec<AgentPublicDoc>> {
 mod tests {
     use super::*;
     use secrecy::SecretString;
+
+    fn pw() -> SecretString {
+        SecretString::from("pw")
+    }
+
+    /// D1: a long-lived handle (the relay) used to write back its stale startup copy on every
+    /// `use_key`, deleting secrets and revocations written by other processes since.
+    #[test]
+    fn stale_handle_does_not_erase_concurrent_writes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("vault.lockrail");
+        let mut relay = Vault::init(&path, pw(), KdfParamsDoc::test_fast()).unwrap();
+        relay.add_key("old".into(), "old-value-123".into()).unwrap();
+
+        let mut cli = Vault::open(&path, pw()).unwrap();
+        cli.add_key("new".into(), "new-value-456".into()).unwrap();
+        let cap = uuid::Uuid::new_v4();
+        cli.revoke(cap).unwrap();
+
+        // The stale handle uses a key, which writes metadata.
+        assert_eq!(relay.use_key("old").unwrap(), "old-value-123");
+
+        let fresh = Vault::open(&path, pw()).unwrap();
+        assert!(
+            fresh.data.keys.contains_key("new"),
+            "concurrent secret was erased"
+        );
+        assert!(
+            fresh.revoked_list().contains(&cap),
+            "concurrent revocation was erased"
+        );
+    }
+
+    #[test]
+    fn concurrent_writers_do_not_lose_updates() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("vault.lockrail");
+        Vault::init(&path, pw(), KdfParamsDoc::test_fast()).unwrap();
+        let handles = (0..8)
+            .map(|i| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    let mut v = Vault::open(&path, pw()).unwrap();
+                    v.add_key(format!("k{i}"), format!("value-{i}-abcdef"))
+                        .unwrap();
+                })
+            })
+            .collect::<Vec<_>>();
+        for h in handles {
+            h.join().unwrap();
+        }
+        let v = Vault::open(&path, pw()).unwrap();
+        for i in 0..8 {
+            assert!(v.data.keys.contains_key(&format!("k{i}")), "k{i} lost");
+        }
+    }
+
+    /// D13: KDF parameters come from the file; an absurd value must be refused before any
+    /// derivation runs, not allocate until the process dies.
+    #[test]
+    fn absurd_kdf_params_are_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("vault.lockrail");
+        Vault::init(&path, pw(), KdfParamsDoc::test_fast()).unwrap();
+        let mut env: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        env["kdf"]["memory_kib"] = serde_json::json!(4_294_967_295u64);
+        fs::write(&path, serde_json::to_vec(&env).unwrap()).unwrap();
+        assert!(matches!(
+            Vault::open(&path, pw()),
+            Err(VaultError::KdfParamsOutOfRange)
+        ));
+    }
 
     #[test]
     fn vault_roundtrip_and_no_plaintext_secret() {
