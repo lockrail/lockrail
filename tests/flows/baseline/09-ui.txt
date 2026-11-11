@@ -1,0 +1,111 @@
+$ lockrail setup --json
+exit=0
+{
+  "agent": {
+    "agent_id": "<B64>",
+    "created_at": <EPOCH>,
+    "kind": "local-cli",
+    "name": "default-local-agent",
+    "public_key": "<B64>",
+    "revoked": false,
+    "updated_at": <EPOCH>,
+    "version": 1
+  },
+  "credential_mode": "generated_local_key",
+  "doctor": {
+    "checks": {
+      "active_lockrail": null,
+      "active_lockrail_matches_current": false,
+      "audit_exists": true,
+      "audit_verify": {
+        "message": "ok: 1 events",
+        "ok": true
+      },
+      "config_valid": true,
+      "current_exe": "<BIN>",
+      "home": "<WORK>/home-09-ui/.lockrail",
+      "legacy_password_vault_without_key": false,
+      "path_prepend_ok": false,
+      "real_claude_found": true,
+      "real_codex_found": true,
+      "real_cursor_found": true,
+      "replay_store_writable": true,
+      "security_defaults_enabled": true,
+      "shims_installed": {
+        "agy": true,
+        "claude": true,
+        "codex": true,
+        "cursor": true
+      },
+      "usage_store_writable": true,
+      "vault_credential_available": true,
+      "vault_exists": true,
+      "vault_key_auto_managed": true,
+      "vault_key_exists": true,
+      "vault_key_permissions": "0600",
+      "vault_key_permissions_ok": true,
+      "vault_permissions": "0600",
+      "vault_permissions_ok": true
+    },
+    "fixes": [
+      "export PATH=\"<WORK>/home-09-ui/.lockrail/bin:$PATH\"",
+      "add the Lockrail install directory to PATH"
+    ],
+    "ok": false
+  },
+  "next": [
+    "open a new terminal if PATH changed",
+    "lockrail demo",
+    "lockrail doctor",
+    "claude",
+    "codex",
+    "cursor",
+    "agy"
+  ],
+  "profile": {
+    "created_at": <EPOCH>,
+    "name": "local-user"
+  },
+  "recovered_from": null,
+  "shims": {
+    "installed": [
+      "<WORK>/home-09-ui/.lockrail/bin/agy",
+      "<WORK>/home-09-ui/.lockrail/bin/claude",
+      "<WORK>/home-09-ui/.lockrail/bin/codex",
+      "<WORK>/home-09-ui/.lockrail/bin/cursor"
+    ],
+    "path_prepend": "export PATH=\"<WORK>/home-09-ui/.lockrail/bin:$PATH\""
+  },
+  "status": "ready",
+  "tools": [
+    "agy",
+    "claude",
+    "codex",
+    "cursor"
+  ],
+  "vault_key": {
+    "path": "<WORK>/home-09-ui/.lockrail/vault.key",
+    "stored_locally": true
+  }
+}
+
+$ GET / without token
+exit=0
+401
+
+$ GET / with a wrong token
+exit=0
+401
+
+$ GET / with the session token
+exit=0
+200
+
+# ui output
+{
+  "listen": "127.0.0.1:<PORT>",
+  "local_only": false,
+  "token_protected": true,
+  "url": "http://127.0.0.1:<PORT>/?token=<HEX>"
+}
+

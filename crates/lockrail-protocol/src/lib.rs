@@ -1,5 +1,6 @@
 pub mod presets;
-pub mod seal;
+/// The detection engine moved to `lockrail-engine` (Phase 3A); this keeps the old path.
+pub use lockrail_engine::seal;
 
 use base64ct::{Base64UrlUnpadded, Encoding};
 use core::fmt;
@@ -8,7 +9,7 @@ use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr};
 use time::OffsetDateTime;
 use url::{Host, Url};
 use uuid::Uuid;
@@ -484,22 +485,61 @@ fn host_is_private(host: &Host<&str>) -> bool {
 }
 
 fn is_blocked_ip(ip: &IpAddr) -> bool {
+    !is_global_unicast(ip)
+}
+
+/// D8: an allowlist of globally routable unicast addresses, written out by hand because
+/// `IpAddr::is_global` is unstable. Everything else is refused: private, loopback,
+/// link-local, CGNAT `100.64/10`, `0/8`, multicast, broadcast, reserved, documentation and
+/// benchmarking ranges, and IPv6 forms that embed an IPv4 address (mapped, compatible, NAT64,
+/// 6to4, Teredo). Shared by the URL check and the relay's post-DNS check so the two sites
+/// cannot drift apart.
+pub fn is_global_unicast(ip: &IpAddr) -> bool {
     match ip {
-        IpAddr::V4(ip) => {
-            ip.is_private()
-                || ip.is_loopback()
-                || ip.is_link_local()
-                || *ip == Ipv4Addr::UNSPECIFIED
-                || *ip == Ipv4Addr::new(169, 254, 169, 254)
-        }
-        IpAddr::V6(ip) => {
-            ip.is_loopback()
-                || ip.is_unspecified()
-                || ip.is_unicast_link_local()
-                || ip.is_unique_local()
-                || *ip == Ipv6Addr::LOCALHOST
+        IpAddr::V4(v4) => is_global_v4(*v4),
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_global_v4(v4);
+            }
+            let s = v6.segments();
+            // Only 2000::/3 is global unicast.
+            if s[0] & 0xe000 != 0x2000 {
+                return false;
+            }
+            let in_prefix = |prefix: [u16; 2], bits: u32| {
+                let value = (u32::from(s[0]) << 16) | u32::from(s[1]);
+                let want = (u32::from(prefix[0]) << 16) | u32::from(prefix[1]);
+                let mask = if bits == 0 {
+                    0
+                } else {
+                    u32::MAX << (32 - bits)
+                };
+                value & mask == want & mask
+            };
+            !(in_prefix([0x2001, 0x0000], 23) // IETF protocol assignments, incl. Teredo 2001::/32
+                || in_prefix([0x2001, 0x0db8], 32) // documentation
+                || in_prefix([0x2002, 0x0000], 16) // 6to4
+                || in_prefix([0x3fff, 0x0000], 20)) // documentation (RFC 9637)
         }
     }
+}
+
+fn is_global_v4(ip: Ipv4Addr) -> bool {
+    let [a, b, c, _] = ip.octets();
+    !(a == 0 // 0.0.0.0/8 "this network"
+        || a == 10
+        || a == 127
+        || (a == 100 && (64..=127).contains(&b)) // CGNAT 100.64/10
+        || (a == 169 && b == 254)
+        || (a == 172 && (16..=31).contains(&b))
+        || (a == 192 && b == 0 && c == 0) // IETF protocol assignments
+        || (a == 192 && b == 0 && c == 2) // TEST-NET-1
+        || (a == 192 && b == 88 && c == 99) // 6to4 relay anycast
+        || (a == 192 && b == 168)
+        || (a == 198 && (18..=19).contains(&b)) // benchmarking 198.18/15
+        || (a == 198 && b == 51 && c == 100) // TEST-NET-2
+        || (a == 203 && b == 0 && c == 113) // TEST-NET-3
+        || a >= 224) // multicast 224/4, reserved 240/4, broadcast
 }
 
 pub fn enforce_request(claims: &CapabilityClaims, method: &str, upstream: &str) -> Result<Url> {
@@ -785,6 +825,50 @@ impl Receipt {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ssrf_allowlist_table() {
+        // GATE 8 (D8): each of these must be refused; a public address must pass.
+        for blocked in [
+            "100.64.0.1",
+            "0.0.0.1",
+            "::ffff:10.0.0.1",
+            "64:ff9b::a00:1",
+            "224.0.0.1",
+            "198.18.0.1",
+            "10.1.2.3",
+            "172.16.0.1",
+            "192.168.1.1",
+            "127.0.0.1",
+            "169.254.169.254",
+            "255.255.255.255",
+            "240.0.0.1",
+            "192.0.2.1",
+            "203.0.113.9",
+            "::1",
+            "::",
+            "fe80::1",
+            "fc00::1",
+            "ff02::1",
+            "2001:db8::1",
+            "2002:a00:1::1",
+            "2001::1",
+            "::ffff:127.0.0.1",
+            "::a00:1",
+        ] {
+            let ip: IpAddr = blocked.parse().unwrap();
+            assert!(!is_global_unicast(&ip), "{blocked} allowed");
+        }
+        for allowed in [
+            "140.82.112.3",
+            "8.8.8.8",
+            "2606:4700:4700::1111",
+            "::ffff:140.82.112.3",
+        ] {
+            let ip: IpAddr = allowed.parse().unwrap();
+            assert!(is_global_unicast(&ip), "{allowed} refused");
+        }
+    }
 
     #[test]
     fn capability_and_proof_roundtrip() {

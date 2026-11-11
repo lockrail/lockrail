@@ -1,0 +1,178 @@
+$ lockrail setup --json
+exit=0
+{
+  "agent": {
+    "agent_id": "<B64>",
+    "created_at": <EPOCH>,
+    "kind": "local-cli",
+    "name": "default-local-agent",
+    "public_key": "<B64>",
+    "revoked": false,
+    "updated_at": <EPOCH>,
+    "version": 1
+  },
+  "credential_mode": "generated_local_key",
+  "doctor": {
+    "checks": {
+      "active_lockrail": null,
+      "active_lockrail_matches_current": false,
+      "audit_exists": true,
+      "audit_verify": {
+        "message": "ok: 1 events",
+        "ok": true
+      },
+      "config_valid": true,
+      "current_exe": "<BIN>",
+      "home": "<WORK>/home-07-env-seal/.lockrail",
+      "legacy_password_vault_without_key": false,
+      "path_prepend_ok": false,
+      "real_claude_found": true,
+      "real_codex_found": true,
+      "real_cursor_found": true,
+      "replay_store_writable": true,
+      "security_defaults_enabled": true,
+      "shims_installed": {
+        "agy": true,
+        "claude": true,
+        "codex": true,
+        "cursor": true
+      },
+      "usage_store_writable": true,
+      "vault_credential_available": true,
+      "vault_exists": true,
+      "vault_key_auto_managed": true,
+      "vault_key_exists": true,
+      "vault_key_permissions": "0600",
+      "vault_key_permissions_ok": true,
+      "vault_permissions": "0600",
+      "vault_permissions_ok": true
+    },
+    "fixes": [
+      "export PATH=\"<WORK>/home-07-env-seal/.lockrail/bin:$PATH\"",
+      "add the Lockrail install directory to PATH"
+    ],
+    "ok": false
+  },
+  "next": [
+    "open a new terminal if PATH changed",
+    "lockrail demo",
+    "lockrail doctor",
+    "claude",
+    "codex",
+    "cursor",
+    "agy"
+  ],
+  "profile": {
+    "created_at": <EPOCH>,
+    "name": "local-user"
+  },
+  "recovered_from": null,
+  "shims": {
+    "installed": [
+      "<WORK>/home-07-env-seal/.lockrail/bin/agy",
+      "<WORK>/home-07-env-seal/.lockrail/bin/claude",
+      "<WORK>/home-07-env-seal/.lockrail/bin/codex",
+      "<WORK>/home-07-env-seal/.lockrail/bin/cursor"
+    ],
+    "path_prepend": "export PATH=\"<WORK>/home-07-env-seal/.lockrail/bin:$PATH\""
+  },
+  "status": "ready",
+  "tools": [
+    "agy",
+    "claude",
+    "codex",
+    "cursor"
+  ],
+  "vault_key": {
+    "path": "<WORK>/home-07-env-seal/.lockrail/vault.key",
+    "stored_locally": true
+  }
+}
+
+$ lockrail env scan .env --json
+exit=0
+{
+  "count": 2,
+  "findings": [
+    {
+      "fingerprint": "<FP>",
+      "kind": "github-token",
+      "preview": "ghp_***Q7r8"
+    },
+    {
+      "fingerprint": "<FP>",
+      "kind": "high-entropy-token",
+      "preview": "OPEN***1Gf0"
+    }
+  ],
+  "path": ".env",
+  "safe_text": "APP_NAME=flows\nGITHUB_TOKEN=<HANDLE>\n<HANDLE>\n"
+}
+
+$ lockrail env seal .env --out .env.lockrail --dry-run --json
+exit=0
+{
+  "dry_run": true,
+  "findings": [
+    {
+      "fingerprint": "<FP>",
+      "kind": "github-token",
+      "preview": "ghp_***Q7r8"
+    },
+    {
+      "fingerprint": "<FP>",
+      "kind": "high-entropy-token",
+      "preview": "OPEN***1Gf0"
+    }
+  ],
+  "out": ".env.lockrail",
+  "path": ".env",
+  "safe_text": "APP_NAME=flows\nGITHUB_TOKEN=<HANDLE>\nOPENAI_API_KEY=<B64>\n"
+}
+
+$ lockrail env seal .env --out .env.lockrail --json
+exit=0
+{
+  "dry_run": false,
+  "findings": [
+    {
+      "fingerprint": "<FP>",
+      "kind": "github-token",
+      "preview": "ghp_***Q7r8"
+    },
+    {
+      "fingerprint": "<FP>",
+      "kind": "high-entropy-token",
+      "preview": "OPEN***1Gf0"
+    }
+  ],
+  "out": ".env.lockrail",
+  "path": ".env",
+  "safe_text": "APP_NAME=flows\nGITHUB_TOKEN=<HANDLE>\nOPENAI_API_KEY=<B64>\n"
+}
+
+# .env.lockrail contents
+APP_NAME=flows
+GITHUB_TOKEN=<HANDLE>
+OPENAI_API_KEY=<B64>
+
+$ lockrail env run --dry-run -- true
+exit=0
+{
+  "dry_run": true,
+  "env_keys": [
+    "APP_NAME",
+    "GITHUB_TOKEN",
+    "OPENAI_API_KEY"
+  ],
+  "file": ".env.lockrail"
+}
+
+$ lockrail env run -- sh -c <resolves GITHUB_TOKEN>
+exit=0
+{
+  "status": 0,
+  "stderr": "",
+  "stdout": "not-resolved\n"
+}
+

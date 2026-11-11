@@ -1,0 +1,33 @@
+[package]
+name = "lockrail-broker"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Lockrail broker: presence, command-fingerprint grants, and the per-user socket"
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+libc = "0.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSError"] }
+objc2-local-authentication = { version = "0.3", default-features = false, features = ["std", "LAContext", "block2"] }
+block2 = "0.6"
+core-foundation = "0.10"
+
+[dev-dependencies]
+tempfile = { workspace = true }

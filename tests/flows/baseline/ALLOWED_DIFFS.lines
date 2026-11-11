@@ -1,0 +1,78 @@
+## 04-capability-issue.txt
+-exit=4
+-secret not found — run 'lockrail secret list' to see available secrets
++exit=0
++{
++  "claims": {
++    "agent_public_key": "<B64>",
++    "allowed_hosts": [
++      "api.openai.com"
++    ],
++    "allowed_methods": [
++      "POST"
++    ],
++    "allowed_paths": [
++      {
++        "policy": "wildcard",
++        "value": "/v1/*"
++      }
++    ],
++    "allowed_ports": [
++      443
++    ],
++    "allowed_query_prefixes": [],
++    "allowed_schemes": [
++      "https"
++    ],
++    "aud": "lockrail-relay",
++    "cap_id": "<UUID>",
++    "content_type_allowlist": [
++      "application/json",
++      "application/x-www-form-urlencoded"
++    ],
++    "exp": <EPOCH>,
++    "iat": <EPOCH>,
++    "inject_header": "Authorization",
++    "inject_prefix": "Bearer ",
++    "key": "FLOW_KEY",
++    "labels": {},
++    "max_body_size": 1048576,
++    "max_uses": 10,
++    "nbf": <EPOCH>,
++    "purpose": null,
++    "query_policy": "none",
++    "require_proof": true,
++    "revoked": false,
++    "task_id": null,
++    "version": "LRAP/0.3"
++  },
++  "token": "<CAP>"
++}
+## 05-relay.txt
+-{"error":"host not allowed: evil.example.com"}
++{"error":"capability revoked"}
+-<TS>  WARN lockrail_relay: relay request denied error=host not allowed: evil.example.com
++<TS>  WARN lockrail_relay: relay request denied error=capability revoked
+## 07-env-seal.txt
+-      "kind": "high-entropy-token",
+-      "preview": "OPEN***1Gf0"
++      "kind": "openai-key",
++      "preview": "sk-p***1Gf0"
+-  "safe_text": "APP_NAME=flows\nGITHUB_TOKEN=<HANDLE>\n<HANDLE>\n"
++  "safe_text": "APP_NAME=flows\nGITHUB_TOKEN=<HANDLE>\nOPENAI_API_KEY=<HANDLE>\n"
+-      "kind": "high-entropy-token",
+-      "preview": "OPEN***1Gf0"
++      "kind": "openai-key",
++      "preview": "sk-p***1Gf0"
+-  "safe_text": "APP_NAME=flows\nGITHUB_TOKEN=<HANDLE>\nOPENAI_API_KEY=<B64>\n"
++  "safe_text": "APP_NAME=flows\nGITHUB_TOKEN=<HANDLE>\nOPENAI_API_KEY=<HANDLE>\n"
+-      "kind": "high-entropy-token",
+-      "preview": "OPEN***1Gf0"
++      "kind": "openai-key",
++      "preview": "sk-p***1Gf0"
+-  "safe_text": "APP_NAME=flows\nGITHUB_TOKEN=<HANDLE>\nOPENAI_API_KEY=<B64>\n"
++  "safe_text": "APP_NAME=flows\nGITHUB_TOKEN=<HANDLE>\nOPENAI_API_KEY=<HANDLE>\n"
+-OPENAI_API_KEY=<B64>
++OPENAI_API_KEY=<HANDLE>
+-  "stdout": "not-resolved\n"
++  "stdout": "resolved\n"

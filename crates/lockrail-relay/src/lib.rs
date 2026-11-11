@@ -111,11 +111,25 @@ impl ReplayStore for InMemoryReplayStore {
 #[derive(Clone)]
 pub struct FileReplayStore {
     path: PathBuf,
+    key: Option<[u8; 32]>,
 }
 
 impl FileReplayStore {
+    /// Unsigned store (0.3.7 behaviour; atomic writes). Prefer [`FileReplayStore::with_key`].
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
+        Self {
+            path: path.into(),
+            key: None,
+        }
+    }
+
+    /// D10: the store is written atomically and carries an HMAC under `audit_key`; an edited,
+    /// re-formatted or deleted store fails closed with `store_tampered`.
+    pub fn with_key(path: impl Into<PathBuf>, audit_key: [u8; 32]) -> Self {
+        Self {
+            path: path.into(),
+            key: Some(audit_key),
+        }
     }
 }
 
@@ -139,18 +153,14 @@ impl ReplayStore for FileReplayStore {
             .open(lock_path)?;
         lock.lock_exclusive()?;
         let now = lockrail_protocol::now_unix();
-        let mut map: BTreeMap<String, i64> = if self.path.exists() {
-            serde_json::from_slice(&fs::read(&self.path)?)?
-        } else {
-            BTreeMap::new()
-        };
+        let mut map: BTreeMap<String, i64> = store::read(&self.path, self.key.as_ref())?;
         map.retain(|_, expiry| *expiry >= now);
         let key = format!("{capability_hash}:{agent_id}:{nonce}");
         if map.contains_key(&key) {
             return Err(VaultError::ReplayDetected.into());
         }
         map.insert(key, expires_at);
-        fs::write(&self.path, serde_json::to_vec(&map)?)?;
+        store::write(&self.path, self.key.as_ref(), &map)?;
         Ok(())
     }
 }
@@ -181,11 +191,24 @@ impl UsageStore for InMemoryUsageStore {
 #[derive(Clone)]
 pub struct FileUsageStore {
     path: PathBuf,
+    key: Option<[u8; 32]>,
 }
 
 impl FileUsageStore {
+    /// Unsigned store (0.3.7 behaviour; atomic writes). Prefer [`FileUsageStore::with_key`].
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
+        Self {
+            path: path.into(),
+            key: None,
+        }
+    }
+
+    /// D10: see [`FileReplayStore::with_key`].
+    pub fn with_key(path: impl Into<PathBuf>, audit_key: [u8; 32]) -> Self {
+        Self {
+            path: path.into(),
+            key: Some(audit_key),
+        }
     }
 }
 
@@ -202,11 +225,7 @@ impl UsageStore for FileUsageStore {
             .truncate(false)
             .open(lock_path)?;
         lock.lock_exclusive()?;
-        let mut map: BTreeMap<String, u64> = if self.path.exists() {
-            serde_json::from_slice(&fs::read(&self.path)?)?
-        } else {
-            BTreeMap::new()
-        };
+        let mut map: BTreeMap<String, u64> = store::read(&self.path, self.key.as_ref())?;
         let current = *map.get(capability_hash).unwrap_or(&0);
         if let Some(max) = max_uses
             && current >= max
@@ -215,8 +234,121 @@ impl UsageStore for FileUsageStore {
         }
         let next = current + 1;
         map.insert(capability_hash.to_string(), next);
-        fs::write(&self.path, serde_json::to_vec(&map)?)?;
+        store::write(&self.path, self.key.as_ref(), &map)?;
         Ok(next)
+    }
+}
+
+/// D10: atomic, HMAC'd relay stores.
+///
+/// Format: `{"v":2,"mac_hex":"<HMAC-SHA256(audit_key, json(data))>","data":{...}}`, written to a
+/// temp file, fsynced and renamed. `<path>.v2` marks that a signed store exists: from then on a
+/// missing file, a plain 0.3.7 map or a bad MAC is `store_tampered`. Before the marker exists, a
+/// plain 0.3.7 map is accepted once and re-written signed (the upgrade path).
+mod store {
+    use anyhow::{Result, anyhow};
+    use hmac::{Hmac, Mac};
+    use serde::{Serialize, de::DeserializeOwned};
+    use sha2::Sha256;
+    use std::fs;
+    use std::io::Write;
+    use std::path::{Path, PathBuf};
+
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct Envelope<T> {
+        v: u8,
+        mac_hex: String,
+        data: T,
+    }
+
+    fn marker(path: &Path) -> PathBuf {
+        let mut name = path.as_os_str().to_owned();
+        name.push(".v2");
+        PathBuf::from(name)
+    }
+
+    fn mac(key: &[u8; 32], data: &[u8]) -> Hmac<Sha256> {
+        let mut m = <Hmac<Sha256> as Mac>::new_from_slice(key).expect("hmac key");
+        m.update(data);
+        m
+    }
+
+    fn tampered(path: &Path, what: &str) -> anyhow::Error {
+        anyhow!(
+            "store_tampered: {} {what}",
+            path.file_name().and_then(|n| n.to_str()).unwrap_or("store")
+        )
+    }
+
+    pub fn read<T: DeserializeOwned + Serialize + Default>(
+        path: &Path,
+        key: Option<&[u8; 32]>,
+    ) -> Result<T> {
+        let signed_before = key.is_some() && marker(path).exists();
+        let bytes = match fs::read(path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                if signed_before {
+                    return Err(tampered(path, "is missing"));
+                }
+                return Ok(T::default());
+            }
+            Err(e) => return Err(e.into()),
+        };
+        if let Ok(envelope) = serde_json::from_slice::<Envelope<serde_json::Value>>(&bytes) {
+            if let Some(key) = key {
+                let data = serde_json::to_vec(&envelope.data)?;
+                let claimed = hex::decode(&envelope.mac_hex)
+                    .map_err(|_| tampered(path, "has a malformed MAC"))?;
+                mac(key, &data)
+                    .verify_slice(&claimed)
+                    .map_err(|_| tampered(path, "failed its MAC check"))?;
+            }
+            return serde_json::from_value(envelope.data)
+                .map_err(|_| tampered(path, "has malformed data"));
+        }
+        if signed_before {
+            return Err(tampered(path, "lost its signature"));
+        }
+        // 0.3.7 plain map: accepted once; the next write signs it.
+        serde_json::from_slice(&bytes).map_err(|_| tampered(path, "is not valid JSON"))
+    }
+
+    pub fn write<T: Serialize>(path: &Path, key: Option<&[u8; 32]>, value: &T) -> Result<()> {
+        let data = serde_json::to_value(value)?;
+        let body = match key {
+            Some(key) => {
+                let mac_hex = hex::encode(
+                    mac(key, &serde_json::to_vec(&data)?)
+                        .finalize()
+                        .into_bytes(),
+                );
+                serde_json::to_vec(&Envelope {
+                    v: 2,
+                    mac_hex,
+                    data,
+                })?
+            }
+            None => serde_json::to_vec(&data)?,
+        };
+        let dir = path
+            .parent()
+            .ok_or_else(|| anyhow!("store path has no parent"))?;
+        let tmp = dir.join(format!(
+            ".{}.{}.tmp",
+            path.file_name().and_then(|n| n.to_str()).unwrap_or("store"),
+            std::process::id()
+        ));
+        {
+            let mut f = fs::File::create(&tmp)?;
+            f.write_all(&body)?;
+            f.sync_all()?;
+        }
+        fs::rename(&tmp, path)?;
+        if key.is_some() {
+            fs::write(marker(path), b"")?;
+        }
+        Ok(())
     }
 }
 
@@ -276,6 +408,9 @@ pub async fn perform_relay(state: RelayState, req: RelayRequest) -> Result<Relay
             .vault
             .lock()
             .map_err(|_| anyhow!("vault lock poisoned"))?;
+        // Re-read the vault from disk for every request: revocations and secrets written by the
+        // CLI after the relay started must be honoured, never overwritten (D1).
+        vault.reload()?;
         let token = CapabilityToken::verify(
             &req.capability,
             &vault.issuer_public_key()?,
@@ -336,15 +471,8 @@ pub async fn perform_relay(state: RelayState, req: RelayRequest) -> Result<Relay
         }
         for addr in &addrs {
             let ip: IpAddr = addr.ip();
-            if ip.is_loopback()
-                || ip.is_unspecified()
-                || matches!(ip, IpAddr::V4(v4) if
-                    v4.is_private()
-                    || v4.is_link_local()
-                    || v4 == std::net::Ipv4Addr::new(169, 254, 169, 254))
-                || matches!(ip, IpAddr::V6(v6) if
-                    v6.is_unique_local() || v6.is_unicast_link_local())
-            {
+            // D8: the same allowlist as the URL check (`enforce_request`).
+            if !lockrail_protocol::is_global_unicast(&ip) {
                 return Err(anyhow!(
                     "DNS rebinding blocked: {host} resolved to private address {ip}"
                 ));
@@ -489,6 +617,70 @@ pub async fn serve(state: RelayState, addr: SocketAddr) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn signed_usage_store_detects_tamper_and_deletion() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("usage-store.json");
+        let key = [9u8; 32];
+        let store = FileUsageStore::with_key(&path, key);
+        assert_eq!(store.record_use("cap", Some(5)).unwrap(), 1);
+        assert_eq!(store.record_use("cap", Some(5)).unwrap(), 2);
+
+        // GATE 8: edit one byte -> store_tampered (the relay answers 403 with this text).
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("\"cap\":2"), "{text}");
+        std::fs::write(&path, text.replace("\"cap\":2", "\"cap\":0")).unwrap();
+        let err = store.record_use("cap", Some(5)).unwrap_err().to_string();
+        assert!(err.starts_with("store_tampered"), "{err}");
+
+        // Deleting the signed store is tampering too, not a reset.
+        std::fs::remove_file(&path).unwrap();
+        let err = store.record_use("cap", Some(5)).unwrap_err().to_string();
+        assert!(err.starts_with("store_tampered"), "{err}");
+    }
+
+    #[test]
+    fn legacy_plain_store_is_accepted_once_then_signed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("usage-store.json");
+        std::fs::write(&path, br#"{"cap":3}"#).unwrap();
+        let store = FileUsageStore::with_key(&path, [9u8; 32]);
+        assert_eq!(store.record_use("cap", Some(5)).unwrap(), 4);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("mac_hex"));
+        // A plain map written over a signed store is refused.
+        std::fs::write(&path, br#"{"cap":0}"#).unwrap();
+        assert!(
+            store
+                .record_use("cap", Some(5))
+                .unwrap_err()
+                .to_string()
+                .starts_with("store_tampered")
+        );
+    }
+
+    #[test]
+    fn signed_replay_store_detects_tamper() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("replay-store.json");
+        let store = FileReplayStore::with_key(&path, [4u8; 32]);
+        store
+            .check_and_store("cap", "agent", "n1", i64::MAX)
+            .unwrap();
+        assert!(
+            store
+                .check_and_store("cap", "agent", "n1", i64::MAX)
+                .is_err()
+        );
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, text.replace("n1", "n2")).unwrap();
+        let err = store
+            .check_and_store("cap", "agent", "n3", i64::MAX)
+            .unwrap_err()
+            .to_string();
+        assert!(err.starts_with("store_tampered"), "{err}");
+    }
     use lockrail_protocol::{AgentKeypairDoc, CapabilityClaims, PathRule, QueryPolicy};
     use lockrail_vault::KdfParamsDoc;
     use secrecy::SecretString;
@@ -568,6 +760,62 @@ mod tests {
         vault.save_agent(&agent, tmp.path().join("agents")).unwrap();
         let raw = fs::read_to_string(path).unwrap();
         assert!(!raw.contains(&agent.private_key));
+    }
+
+    /// D1: the relay opened the vault once at startup and never saw revocations made later.
+    #[tokio::test]
+    async fn relay_honours_revocation_made_after_start() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("vault.lockrail");
+        let mut vault =
+            Vault::init(&path, SecretString::from("pw"), KdfParamsDoc::test_fast()).unwrap();
+        vault
+            .add_key("gh".into(), "ghp_LOCKRAILTESTfakevalue000000000000".into())
+            .unwrap();
+        let claims = CapabilityClaims::new(
+            "gh",
+            5,
+            vec!["api.github.com".into()],
+            vec!["GET".into()],
+            vec!["/*".into()],
+            "Authorization",
+            "Bearer ",
+            Some(5),
+            None,
+            None,
+            None,
+        );
+        let cap_id = claims.cap_id;
+        let capability = CapabilityToken::issue(claims, &vault.signing_key().unwrap()).unwrap();
+        let state = RelayState {
+            vault: Arc::new(Mutex::new(vault)),
+            audit: AuditLog::new(tmp.path().join("audit.jsonl")),
+            replay_store: Arc::new(InMemoryReplayStore::default()),
+            usage_store: Arc::new(InMemoryUsageStore::default()),
+            client: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .unwrap(),
+        };
+        // Another process revokes the capability after the relay has started.
+        Vault::open(&path, SecretString::from("pw"))
+            .unwrap()
+            .revoke(cap_id)
+            .unwrap();
+        let request = RelayRequest {
+            capability,
+            method: "GET".into(),
+            upstream: "https://api.github.com/user".into(),
+            headers: BTreeMap::new(),
+            json: None,
+            data: None,
+            proof: None,
+        };
+        let error = perform_relay(state, request).await.unwrap_err();
+        assert!(
+            error.to_string().to_lowercase().contains("revoked"),
+            "expected revoked, got: {error}"
+        );
     }
 
     #[tokio::test]

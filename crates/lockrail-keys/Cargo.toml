@@ -1,0 +1,31 @@
+[package]
+name = "lockrail-keys"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Key custody for Lockrail: fp_key, audit_key, device key and vault key stores"
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+ed25519-dalek = { workspace = true }
+rand_core = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+zeroize = { workspace = true }
+fs2 = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3"
+
+[dev-dependencies]
+tempfile = { workspace = true }

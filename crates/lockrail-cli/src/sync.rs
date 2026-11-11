@@ -12,6 +12,32 @@ use serde_json::Value;
 // Helpers
 // ---------------------------------------------------------------------------
 
+const GITHUB_API: &str = "https://api.github.com";
+const VERCEL_API: &str = "https://api.vercel.com";
+
+/// D15: percent-encode one URL path segment (everything except RFC 3986 unreserved
+/// characters), so a name such as `a/b?c` cannot change the request path or add a query.
+pub fn path_segment(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+/// D15: one-line value escaping for dotenv and YAML double-quoted strings.
+fn escape_double_quoted(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+}
+
 /// Return the secrets from the vault that belong to the given environment.
 ///
 /// Convention: secrets are tagged with `env:<name>`.  The default environment
@@ -55,13 +81,25 @@ pub async fn sync_github(
     token: &str,
     environment: Option<&str>,
 ) -> Result<usize> {
+    sync_github_at(GITHUB_API, vault, owner, repo, token, environment).await
+}
+
+pub(crate) async fn sync_github_at(
+    api: &str,
+    vault: &mut Vault,
+    owner: &str,
+    repo: &str,
+    token: &str,
+    environment: Option<&str>,
+) -> Result<usize> {
+    let (owner, repo) = (path_segment(owner), path_segment(repo));
     let client = Client::builder()
         .user_agent("lockrail")
         .build()
         .context("failed to build HTTP client")?;
 
     // a) Fetch the repo's Actions public key
-    let pk_url = format!("https://api.github.com/repos/{owner}/{repo}/actions/secrets/public-key");
+    let pk_url = format!("{api}/repos/{owner}/{repo}/actions/secrets/public-key");
     let gh_key: GhPublicKey = client
         .get(&pk_url)
         .bearer_auth(token)
@@ -100,7 +138,10 @@ pub async fn sync_github(
         let encrypted_b64 = Base64::encode_string(&ciphertext);
 
         // c) PUT secret
-        let put_url = format!("https://api.github.com/repos/{owner}/{repo}/actions/secrets/{name}");
+        let put_url = format!(
+            "{api}/repos/{owner}/{repo}/actions/secrets/{}",
+            path_segment(name)
+        );
         let body = GhSecretBody {
             encrypted_value: encrypted_b64,
             key_id: gh_key.key_id.clone(),
@@ -127,17 +168,6 @@ pub async fn sync_github(
 // Vercel sync
 // ---------------------------------------------------------------------------
 
-#[derive(Deserialize)]
-struct VercelEnvVar {
-    id: String,
-    key: String,
-}
-
-#[derive(Deserialize)]
-struct VercelEnvList {
-    envs: Vec<VercelEnvVar>,
-}
-
 #[derive(Serialize)]
 struct VercelEnvBody {
     key: String,
@@ -156,28 +186,23 @@ pub async fn sync_vercel(
     token: &str,
     environment: Option<&str>,
 ) -> Result<usize> {
+    sync_vercel_at(VERCEL_API, vault, project_id, token, environment).await
+}
+
+/// D15: one create call per variable with `upsert=true`. 0.3.7 deleted the existing variable
+/// and then created it, so a failed create left the project without the variable.
+pub(crate) async fn sync_vercel_at(
+    api: &str,
+    vault: &mut Vault,
+    project_id: &str,
+    token: &str,
+    environment: Option<&str>,
+) -> Result<usize> {
+    let project_id = path_segment(project_id);
     let client = Client::builder()
         .user_agent("lockrail")
         .build()
         .context("failed to build HTTP client")?;
-
-    // a) List existing env vars
-    let list_url = format!("https://api.vercel.com/v9/projects/{project_id}/env?limit=100");
-    let existing: VercelEnvList = client
-        .get(&list_url)
-        .bearer_auth(token)
-        .send()
-        .await
-        .context("GET Vercel env list failed")?
-        .error_for_status()
-        .context("GET Vercel env list: non-2xx response")?
-        .json()
-        .await
-        .context("GET Vercel env list: JSON decode failed")?;
-
-    // Build map of key -> env_id for existing vars
-    let existing_map: std::collections::HashMap<String, String> =
-        existing.envs.into_iter().map(|v| (v.key, v.id)).collect();
 
     let pairs: Vec<(String, String)> = secrets_for_env(vault, environment)
         .into_iter()
@@ -186,21 +211,7 @@ pub async fn sync_vercel(
 
     let mut count = 0usize;
     for (name, value) in &pairs {
-        // b) Delete existing entry if present
-        if let Some(env_id) = existing_map.get(name.as_str()) {
-            let del_url = format!("https://api.vercel.com/v9/projects/{project_id}/env/{env_id}");
-            client
-                .delete(&del_url)
-                .bearer_auth(token)
-                .send()
-                .await
-                .with_context(|| format!("DELETE Vercel env '{name}' failed"))?
-                .error_for_status()
-                .with_context(|| format!("DELETE Vercel env '{name}': non-2xx response"))?;
-        }
-
-        // POST the new value
-        let post_url = format!("https://api.vercel.com/v10/projects/{project_id}/env");
+        let post_url = format!("{api}/v10/projects/{project_id}/env?upsert=true");
         let body = VercelEnvBody {
             key: name.clone(),
             value: value.clone(),
@@ -237,7 +248,7 @@ pub fn export_dotenv(vault: &Vault, environment: Option<&str>) -> String {
     for (name, value) in secrets_for_env(vault, environment) {
         // Escape the value: wrap in double quotes, escaping inner quotes and
         // backslashes so the output is a valid .env file.
-        let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
+        let escaped = escape_double_quoted(value);
         out.push_str(&format!("{name}=\"{escaped}\"\n"));
     }
     out
@@ -269,7 +280,7 @@ pub fn export_yaml(vault: &Vault, environment: Option<&str>) -> String {
             || value.ends_with(' ')
             || value.is_empty();
         if needs_quotes {
-            let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
+            let escaped = escape_double_quoted(value);
             out.push_str(&format!("{name}: \"{escaped}\"\n"));
         } else {
             out.push_str(&format!("{name}: {value}\n"));
@@ -359,5 +370,108 @@ fn parse_single_quoted(s: &str) -> String {
         inner[..end].to_string()
     } else {
         inner.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::Router;
+    use axum::extract::{OriginalUri, State};
+    use axum::http::StatusCode;
+    use axum::routing::any;
+    use secrecy::SecretString;
+    use std::sync::{Arc, Mutex};
+
+    type Log = Arc<Mutex<Vec<String>>>;
+
+    fn vault_with(secrets: &[(&str, &str)]) -> (tempfile::TempDir, Vault) {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut vault = Vault::init(
+            tmp.path().join("vault.lockrail"),
+            SecretString::from("pw"),
+            lockrail_vault::KdfParamsDoc::test_fast(),
+        )
+        .unwrap();
+        for (name, value) in secrets {
+            vault
+                .set_secret(name.to_string(), value.to_string(), "default", vec![])
+                .unwrap();
+        }
+        (tmp, vault)
+    }
+
+    async fn serve(fail_post_after: usize) -> (String, Log) {
+        let log: Log = Arc::default();
+        let app = Router::new()
+            .fallback(any(
+                |State((log, fail_after)): State<(Log, usize)>,
+                 method: axum::http::Method,
+                 OriginalUri(uri): OriginalUri| async move {
+                    let mut log = log.lock().unwrap();
+                    log.push(format!("{method} {uri}"));
+                    let posts = log.iter().filter(|l| l.starts_with("POST")).count();
+                    if method == axum::http::Method::POST && posts > fail_after {
+                        return (StatusCode::INTERNAL_SERVER_ERROR, "boom".to_string());
+                    }
+                    if uri.path().ends_with("/public-key") {
+                        return (
+                            StatusCode::OK,
+                            serde_json::json!({"key_id": "k1", "key": Base64::encode_string(&[7u8; 32])}).to_string(),
+                        );
+                    }
+                    (StatusCode::OK, "{}".to_string())
+                },
+            ))
+            .with_state((log.clone(), fail_post_after));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (format!("http://{addr}"), log)
+    }
+
+    #[tokio::test]
+    async fn vercel_failure_never_deletes_the_existing_variable() {
+        let (_tmp, mut vault) = vault_with(&[("A_KEY", "one"), ("B_KEY", "two")]);
+        let (api, log) = serve(1).await;
+        let result = sync_vercel_at(&api, &mut vault, "prj_1", "t", None).await;
+        assert!(result.is_err(), "second create should fail");
+        let log = log.lock().unwrap();
+        assert!(
+            log.iter().all(|l| !l.starts_with("DELETE")),
+            "a variable was deleted: {log:?}"
+        );
+        assert!(
+            log.iter()
+                .all(|l| !l.starts_with("POST") || l.contains("upsert=true")),
+            "{log:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn names_are_percent_encoded_in_paths() {
+        let (_tmp, mut vault) = vault_with(&[("a/b?c", "v")]);
+        let (api, log) = serve(usize::MAX).await;
+        sync_github_at(&api, &mut vault, "own er", "re/po", "t", None)
+            .await
+            .unwrap();
+        let log = log.lock().unwrap();
+        assert!(
+            log.iter()
+                .any(|l| l == "PUT /repos/own%20er/re%2Fpo/actions/secrets/a%2Fb%3Fc"),
+            "{log:?}"
+        );
+    }
+
+    #[test]
+    fn dotenv_and_yaml_values_stay_on_one_line() {
+        let (_tmp, vault) = vault_with(&[("MULTI", "line1\nline2\r\n\"q\" \\")]);
+        let dotenv = export_dotenv(&vault, None);
+        assert_eq!(dotenv.lines().count(), 1, "{dotenv}");
+        assert_eq!(
+            import_dotenv(&dotenv),
+            vec![("MULTI".to_string(), "line1\nline2\r\n\"q\" \\".to_string())]
+        );
+        assert_eq!(export_yaml(&vault, None).lines().count(), 1);
     }
 }

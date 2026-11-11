@@ -1,0 +1,31 @@
+[package]
+name = "lockrail-engine"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Lockrail detection engine: secret and PHI detectors, sealing and handles"
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+hmac = { workspace = true }
+hex = { workspace = true }
+base64ct = { workspace = true }
+regex = { workspace = true }
+aho-corasick = "1"
+
+[dev-dependencies]
+
+[[bench]]
+name = "worst_case"
+harness = false

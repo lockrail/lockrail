@@ -29,3 +29,11 @@ usage-store.json
 .env
 .env.local
 .env.*.local
+dist/
+.build/
+
+# Detection corpora hold realistic-looking fake keys (GitHub push protection blocks them) and the
+# held-out sets must stay unseen by tuning. Regenerate the dev set with tests/corpus/gen_dev.py.
+tests/heldout*/cases.jsonl
+tests/heldout*/PROMPT.md
+tests/corpus/dev.jsonl

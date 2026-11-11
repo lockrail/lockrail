@@ -1,16 +1,20 @@
 [workspace]
 members = [
+    "crates/lockrail-engine",
     "crates/lockrail-protocol",
     "crates/lockrail-vault",
     "crates/lockrail-audit",
     "crates/lockrail-relay",
     "crates/lockrail-proxy",
+    "crates/lockrail-keys",
+    "crates/lockrail-broker",
+    "crates/lockrail-policy",
     "crates/lockrail-cli",
 ]
 resolver = "2"
 
 [workspace.package]
-version = "0.3.7"
+version = "0.4.0"
 edition = "2024"
 authors = ["Het Mehta <hi@hetmehta.com>"]
 license = "PolyForm-Noncommercial-1.0.0"
@@ -33,7 +37,9 @@ opt-level = 3
 lto = "fat"
 codegen-units = 1
 strip = "symbols"
-panic = "abort"
+# unwind (not abort): a panic in one relay/proxy connection task must not kill the process,
+# and hooks catch panics to fail closed (D2 class).
+panic = "unwind"
 
 [workspace.dependencies]
 anyhow = "1.0"
@@ -52,6 +58,8 @@ aes-gcm = { version = "0.10", features = ["aes"] }
 argon2 = "0.5"
 base64ct = { version = "1.8", features = ["alloc"] }
 sha2 = "0.10"
+hmac = "0.12"
+regex = "1"
 uuid = { version = "1.18", features = ["v4", "serde"] }
 time = { version = "0.3", features = ["serde", "formatting", "parsing", "macros"] }
 url = { version = "2.5", features = ["serde"] }

@@ -1,0 +1,180 @@
+$ lockrail setup --json
+exit=0
+{
+  "agent": {
+    "agent_id": "<B64>",
+    "created_at": <EPOCH>,
+    "kind": "local-cli",
+    "name": "default-local-agent",
+    "public_key": "<B64>",
+    "revoked": false,
+    "updated_at": <EPOCH>,
+    "version": 1
+  },
+  "credential_mode": "generated_local_key",
+  "doctor": {
+    "checks": {
+      "active_lockrail": null,
+      "active_lockrail_matches_current": false,
+      "audit_exists": true,
+      "audit_verify": {
+        "message": "ok: 1 events",
+        "ok": true
+      },
+      "config_valid": true,
+      "current_exe": "<BIN>",
+      "home": "<WORK>/home-06-proxy/.lockrail",
+      "legacy_password_vault_without_key": false,
+      "path_prepend_ok": false,
+      "real_claude_found": true,
+      "real_codex_found": true,
+      "real_cursor_found": true,
+      "replay_store_writable": true,
+      "security_defaults_enabled": true,
+      "shims_installed": {
+        "agy": true,
+        "claude": true,
+        "codex": true,
+        "cursor": true
+      },
+      "usage_store_writable": true,
+      "vault_credential_available": true,
+      "vault_exists": true,
+      "vault_key_auto_managed": true,
+      "vault_key_exists": true,
+      "vault_key_permissions": "0600",
+      "vault_key_permissions_ok": true,
+      "vault_permissions": "0600",
+      "vault_permissions_ok": true
+    },
+    "fixes": [
+      "export PATH=\"<WORK>/home-06-proxy/.lockrail/bin:$PATH\"",
+      "add the Lockrail install directory to PATH"
+    ],
+    "ok": false
+  },
+  "next": [
+    "open a new terminal if PATH changed",
+    "lockrail demo",
+    "lockrail doctor",
+    "claude",
+    "codex",
+    "cursor",
+    "agy"
+  ],
+  "profile": {
+    "created_at": <EPOCH>,
+    "name": "local-user"
+  },
+  "recovered_from": null,
+  "shims": {
+    "installed": [
+      "<WORK>/home-06-proxy/.lockrail/bin/agy",
+      "<WORK>/home-06-proxy/.lockrail/bin/claude",
+      "<WORK>/home-06-proxy/.lockrail/bin/codex",
+      "<WORK>/home-06-proxy/.lockrail/bin/cursor"
+    ],
+    "path_prepend": "export PATH=\"<WORK>/home-06-proxy/.lockrail/bin:$PATH\""
+  },
+  "status": "ready",
+  "tools": [
+    "agy",
+    "claude",
+    "codex",
+    "cursor"
+  ],
+  "vault_key": {
+    "path": "<WORK>/home-06-proxy/.lockrail/vault.key",
+    "stored_locally": true
+  }
+}
+
+$ lockrail proxy status --json (before CA)
+exit=0
+{
+  "ca_generated": false,
+  "ca_path": "<WORK>/home-06-proxy/.lockrail/proxy-ca.json",
+  "cert_exported": false,
+  "cert_path": "<WORK>/home-06-proxy/.lockrail/lockrail-proxy-ca.crt",
+  "intercepting": [
+    "api.openai.com",
+    "api.anthropic.com",
+    "generativelanguage.googleapis.com",
+    "api.cohere.ai",
+    "api.mistral.ai",
+    "openrouter.ai",
+    "api.together.xyz",
+    "api.groq.com"
+  ],
+  "setup_steps": [
+    "lockrail proxy install-ca",
+    "export HTTPS_PROXY=http://127.0.0.1:<PORT>",
+    "lockrail proxy start"
+  ]
+}
+
+$ lockrail proxy start before install-ca (refused)
+exit=1
+run 'lockrail proxy install-ca' first
+
+$ lockrail proxy install-ca --json (trust-store calls stubbed)
+exit=0
+flows-stub: security refused
+flows-stub: sudo refused
+{
+  "cert_pem_path": "<WORK>/home-06-proxy/.lockrail/lockrail-proxy-ca.crt",
+  "error": "Could not install CA automatically. Run manually:\n  sudo security add-trusted-cert -d -r trustRoot \\\n    -k /Library/Keychains/System.keychain <WORK>/home-06-proxy/.lockrail/lockrail-proxy-ca.crt",
+  "manual_install": "sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain <WORK>/home-06-proxy/.lockrail/lockrail-proxy-ca.crt",
+  "ok": false
+}
+
+$ lockrail proxy start --listen 0.0.0.0:<port> (refused)
+exit=1
+refusing to bind proxy to non-loopback address 0.0.0.0:18799; pass --unsafe-public-listen only on a trusted network
+
+$ lockrail proxy status --json
+exit=0
+{
+  "ca_generated": true,
+  "ca_path": "<WORK>/home-06-proxy/.lockrail/proxy-ca.json",
+  "cert_exported": true,
+  "cert_path": "<WORK>/home-06-proxy/.lockrail/lockrail-proxy-ca.crt",
+  "intercepting": [
+    "api.openai.com",
+    "api.anthropic.com",
+    "generativelanguage.googleapis.com",
+    "api.cohere.ai",
+    "api.mistral.ai",
+    "openrouter.ai",
+    "api.together.xyz",
+    "api.groq.com"
+  ],
+  "setup_steps": [
+    "export HTTPS_PROXY=http://127.0.0.1:<PORT>",
+    "lockrail proxy start"
+  ]
+}
+
+$ curl via proxy to a plain-http loopback host
+exit=52
+000
+
+# proxy log
+{
+  "hint": "export HTTPS_PROXY=http://127.0.0.1:<PORT>",
+  "intercepting": [
+    "api.openai.com",
+    "api.anthropic.com",
+    "generativelanguage.googleapis.com",
+    "api.cohere.ai",
+    "api.mistral.ai",
+    "openrouter.ai",
+    "api.together.xyz",
+    "api.groq.com"
+  ],
+  "listen": "127.0.0.1:<PORT>",
+  "public_listen_enabled": false,
+  "status": "starting"
+}
+<TS>  INFO lockrail_proxy::proxy: lockrail proxy listening addr=127.0.0.1:<PORT>
+
