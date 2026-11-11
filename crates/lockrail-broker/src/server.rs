@@ -222,15 +222,40 @@ mod peer {
     use std::os::unix::io::AsRawFd;
     use std::os::unix::net::UnixStream;
 
-    /// Same uid, and on macOS the same executable as this broker. Fail closed.
-    pub fn verify(stream: &UnixStream) -> Result<(), String> {
-        let fd = stream.as_raw_fd();
+    #[cfg(not(target_os = "linux"))]
+    fn peer_uid(fd: std::os::unix::io::RawFd) -> Option<libc::uid_t> {
         let mut uid: libc::uid_t = 0;
         let mut gid: libc::gid_t = 0;
         // SAFETY: fd is a connected Unix socket; uid/gid are valid out-pointers.
-        if unsafe { libc::getpeereid(fd, &mut uid, &mut gid) } != 0 {
-            return Err("cannot read peer credentials".into());
-        }
+        (unsafe { libc::getpeereid(fd, &mut uid, &mut gid) } == 0).then_some(uid)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn peer_uid(fd: std::os::unix::io::RawFd) -> Option<libc::uid_t> {
+        let mut cred = libc::ucred {
+            pid: 0,
+            uid: 0,
+            gid: 0,
+        };
+        let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+        // SAFETY: fd is a connected Unix socket; cred and len are valid out-pointers of the
+        // size SO_PEERCRED writes.
+        let rc = unsafe {
+            libc::getsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_PEERCRED,
+                (&mut cred as *mut libc::ucred).cast(),
+                &mut len,
+            )
+        };
+        (rc == 0).then_some(cred.uid)
+    }
+
+    /// Same uid, and on macOS the same executable as this broker. Fail closed.
+    pub fn verify(stream: &UnixStream) -> Result<(), String> {
+        let fd = stream.as_raw_fd();
+        let uid = peer_uid(fd).ok_or("cannot read peer credentials")?;
         // SAFETY: getuid has no preconditions.
         if uid != unsafe { libc::getuid() } {
             return Err(format!("peer uid {uid} is not this user"));

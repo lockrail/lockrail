@@ -569,15 +569,16 @@ fn protection_paths(ctx: &GuardContext) -> Vec<PathBuf> {
 pub(crate) fn path_in_protection(path: &Path, ctx: &GuardContext) -> bool {
     let resolve = |p: &Path| -> String {
         let p = lexical_normalize(p);
-        // Follow a symlinked file itself (dotfiles managers link ~/.claude/settings.json), then
-        // fall back to the parent directory for a path that does not exist yet.
-        let real =
-            std::fs::canonicalize(&p).unwrap_or_else(|_| match (p.parent(), p.file_name()) {
-                (Some(dir), Some(name)) => std::fs::canonicalize(dir)
-                    .map(|d| d.join(name))
-                    .unwrap_or_else(|_| p.clone()),
-                _ => p.clone(),
-            });
+        // Follow a symlinked file itself (dotfiles managers link ~/.claude/settings.json). One
+        // lstat decides it, so a huge command does not pay a full canonicalize per token.
+        let is_link = std::fs::symlink_metadata(&p).is_ok_and(|m| m.file_type().is_symlink());
+        let real = match (is_link, p.parent(), p.file_name()) {
+            (true, _, _) => std::fs::canonicalize(&p).unwrap_or_else(|_| p.clone()),
+            (false, Some(dir), Some(name)) => std::fs::canonicalize(dir)
+                .map(|d| d.join(name))
+                .unwrap_or_else(|_| p.clone()),
+            _ => p.clone(),
+        };
         real.to_string_lossy().to_lowercase()
     };
     let target = resolve(path);

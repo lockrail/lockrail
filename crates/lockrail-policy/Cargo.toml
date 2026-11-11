@@ -22,7 +22,6 @@ ed25519-dalek = { workspace = true }
 rand_core = { workspace = true }
 base64ct = { workspace = true }
 lockrail-audit = { version = "0.4.0", path = "../lockrail-audit" }
-lockrail-keys = { version = "0.4.0", path = "../lockrail-keys" }
 
 [dev-dependencies]
 tempfile = { workspace = true }

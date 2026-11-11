@@ -1,7 +1,7 @@
 //! Command fingerprint for grants (PLAN.md section 3.3, R-11; adv_message_2 M15, adv_message_3 M19).
 //!
 //! A grant covers one exact command in one exact project state. The fingerprint hashes:
-//! - `argv`, `cwd` and the policy `PATH` (never the caller's);
+//! - `argv`, `cwd` and the `PATH` the caller passes (`env run` executes with the same one);
 //! - sha256 of `argv[0]` as resolved on that `PATH`, of every existing file named in argv, and
 //!   of the env file;
 //! - a stat fingerprint `(path, size, inode, ctime_ns)` of every file under `cwd`, ignored files
@@ -37,7 +37,8 @@ pub enum Fingerprint {
 pub struct Input<'a> {
     pub argv: &'a [String],
     pub cwd: &'a Path,
-    /// Policy `run_path`, never the caller's `PATH`.
+    /// The caller's `PATH`; `argv[0]` is hashed as resolved on it, so the grant binds the binary
+    /// that runs. (The policy's `run_path` is not enforced yet.)
     pub path: &'a str,
     pub env_file: Option<&'a Path>,
 }

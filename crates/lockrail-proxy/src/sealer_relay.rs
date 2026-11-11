@@ -157,11 +157,7 @@ where
                 .path_and_query()
                 .map(|p| p.as_str().to_string())
                 .unwrap_or_default();
-            let encoding = parts
-                .headers
-                .get(CONTENT_ENCODING)
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_string);
+            let encoding = content_encoding_value(&parts.headers);
             let content_type = parts
                 .headers
                 .get("content-type")
@@ -252,8 +248,36 @@ where
         .map_err(|e| anyhow::anyhow!("{e}"))
 }
 
+/// Every `Content-Encoding` header, in order, as one comma list (that is what repeated headers
+/// mean). A value that is not text becomes an unsupported encoding, so the body fails closed
+/// instead of being scanned under a different encoding than the upstream will apply.
+fn content_encoding_value(headers: &hyper::HeaderMap) -> Option<String> {
+    let mut all = headers.get_all(CONTENT_ENCODING).iter().peekable();
+    all.peek()?;
+    Some(
+        all.map(|v| v.to_str().unwrap_or("unreadable"))
+            .collect::<Vec<_>>()
+            .join(", "),
+    )
+}
+
 #[cfg(test)]
 mod tests {
+
+    use super::content_encoding_value;
+
+    #[test]
+    fn repeated_content_encoding_headers_are_joined_in_order() {
+        let mut h = hyper::HeaderMap::new();
+        assert_eq!(content_encoding_value(&h), None);
+        h.append(CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+        assert_eq!(content_encoding_value(&h).as_deref(), Some("gzip"));
+        h.append(CONTENT_ENCODING, HeaderValue::from_static("br"));
+        assert_eq!(content_encoding_value(&h).as_deref(), Some("gzip, br"));
+        let mut bad = hyper::HeaderMap::new();
+        bad.append(CONTENT_ENCODING, HeaderValue::from_bytes(&[0xff]).unwrap());
+        assert!(crate::sealer::decode_body(content_encoding_value(&bad).as_deref(), b"x").is_err());
+    }
     use super::*;
     use crate::sealer::{FailMode, PhiMode};
     use hyper_util::rt::TokioIo;

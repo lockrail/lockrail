@@ -228,10 +228,9 @@ mod tests {
 
     #[test]
     fn providers_the_sealer_does_not_open_are_flagged() {
-        let some = |k: &'static str, v: &'static str| {
-            let e = env(&[(k, v)]);
-            move |key: &str| e(key)
-        };
+        fn some(k: &'static str, v: &'static str) -> impl Fn(&str) -> Option<String> {
+            move |key: &str| (key == k).then(|| v.to_string())
+        }
         assert!(unsealed_provider(some("CLAUDE_CODE_USE_BEDROCK", "1")));
         assert!(unsealed_provider(some("CLAUDE_CODE_USE_VERTEX", "true")));
         assert!(unsealed_provider(some(
